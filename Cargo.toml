@@ -1,0 +1,8 @@
+[workspace]
+members = [
+  "luhomo-core",
+  "luhomo-service",
+  "luhomo-cli",
+  "luhomo-gui",
+]
+resolver = "2"
