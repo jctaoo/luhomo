@@ -28,7 +28,7 @@ fn main() {
                     ..Default::default()
                 }),
                 app_id: Some("com.luhomo.app".into()),
-                window_min_size: Some(size(px(400.0), px(300.0))),
+                window_min_size: Some(size(px(800.0), px(600.0))),
                 ..Default::default()
             },
             |window, app| {
