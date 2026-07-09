@@ -2850,7 +2850,6 @@ dependencies = [
  "flate2",
  "octocrab",
  "reqwest",
- "rustls",
  "tokio",
  "xshell",
  "zip",

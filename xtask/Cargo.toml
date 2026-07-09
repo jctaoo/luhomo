@@ -7,7 +7,6 @@ publish = false
 [dependencies]
 anyhow = "1"
 reqwest = "0"
-rustls = { version = "0", features = ["ring"] }
 zip = "2"
 flate2 = "1"
 octocrab = "0"

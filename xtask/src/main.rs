@@ -8,9 +8,6 @@ use xshell::{cmd, Shell};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("rustls ring crypto provider");
     let task = env::args().nth(1).unwrap_or_else(|| "help".to_string());
     match task.as_str() {
         "fetch-core" => fetch_core().await?,
