@@ -59,17 +59,8 @@ pub fn configure_max_window_size(
     };
 
     unsafe {
-        // 1. Remove WS_MAXIMIZEBOX — disables the maximize button
-        //    and blocks double-click-to-maximize on the title bar.
-        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-        SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_MAXIMIZEBOX.0 as isize));
-
-        // Force a frame recalculation so the title bar updates immediately.
-        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED;
-        SetWindowPos(hwnd, None, 0, 0, 0, 0, flags).ok();
-
-        // 2. Install subclass to clamp the max track size via WM_GETMINMAXINFO,
-        //    so the window cannot be drag-resized beyond (max_width, max_height).
+        // Install subclass to clamp the max track size via WM_GETMINMAXINFO,
+        // so the window cannot be drag-resized beyond (max_width, max_height).
         let data = Box::new(MaxSizeData {
             max_width,
             max_height,
@@ -83,6 +74,26 @@ pub fn configure_max_window_size(
         .as_bool()
         .then_some(())
         .ok_or_else(|| "SetWindowSubclass returned false".to_string())?;
+    }
+
+    Ok(())
+}
+
+pub fn disable_window_maximize(window: RawWindowHandle) -> Result<(), String> {
+    let hwnd = match window {
+        RawWindowHandle::Win32(w) => HWND(w.hwnd.get() as *mut core::ffi::c_void),
+        _ => return Err("not a Win32 window".into()),
+    };
+
+    unsafe {
+        // Remove WS_MAXIMIZEBOX — disables the maximize button
+        // and blocks double-click-to-maximize on the title bar.
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_MAXIMIZEBOX.0 as isize));
+
+        // Force a frame recalculation so the title bar updates immediately.
+        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED;
+        SetWindowPos(hwnd, None, 0, 0, 0, 0, flags).ok();
     }
 
     Ok(())

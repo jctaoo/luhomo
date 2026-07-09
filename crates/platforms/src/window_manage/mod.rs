@@ -4,6 +4,24 @@ use raw_window_handle::HasWindowHandle;
 #[cfg(target_os = "windows")]
 mod win32;
 
+pub fn disable_window_maximize(window: &impl HasWindowHandle) -> anyhow::Result<()> {
+    let raw = window
+        .window_handle()
+        .map_err(anyhow::Error::msg)
+        .context("getting raw window handle")?;
+
+    let raw = raw.as_raw();
+
+    #[cfg(target_os = "windows")]
+    {
+        win32::disable_window_maximize(raw).unwrap_or_else(|e| {
+            eprintln!("win32 configure failed: {e}");
+        });
+    }
+
+    bail!("Not support yet on current platform: disable_window_maximize");
+}
+
 pub fn configure_window_max_size(
     window: &impl HasWindowHandle,
     max_width: f32,

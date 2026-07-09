@@ -34,8 +34,11 @@ fn main() {
             |window, app| {
                 platforms::window_manage::configure_window_max_size(window, 1200.0, 800.0)
                     .unwrap_or_else(|e| {
-                        eprintln!("configure_window_max_size failed: {e}");
+                        eprintln!("configure_window_max_size failed: {e:#?}");
                     });
+                platforms::window_manage::disable_window_maximize(window).unwrap_or_else(|e| {
+                    eprintln!("disable_window_maximize failed: {e:#?}");
+                });
                 app.new(|_cx| RootView)
             },
         )
