@@ -4,7 +4,11 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-const SUBCLASS_ID: usize = 4242;
+static SIZE_LIMIT_SUBCLASS_KEY: u8 = 0;
+
+fn size_limit_subclass_id() -> usize {
+    &SIZE_LIMIT_SUBCLASS_KEY as *const u8 as usize
+}
 
 struct MaxSizeData {
     max_width: f32,
@@ -37,7 +41,7 @@ unsafe extern "system" fn subclass_proc(
         }
         let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
         unsafe {
-            let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID);
+            let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), size_limit_subclass_id());
         }
         return result;
     }
@@ -57,6 +61,8 @@ pub fn configure_max_window_size(
         RawWindowHandle::Win32(w) => HWND(w.hwnd.get() as *mut core::ffi::c_void),
         _ => return Err("not a Win32 window".into()),
     };
+    
+    let subclass_id = size_limit_subclass_id();
 
     unsafe {
         // Install subclass to clamp the max track size via WM_GETMINMAXINFO,
@@ -68,7 +74,7 @@ pub fn configure_max_window_size(
         SetWindowSubclass(
             hwnd,
             Some(subclass_proc),
-            SUBCLASS_ID,
+            subclass_id,
             Box::into_raw(data) as usize,
         )
         .as_bool()
