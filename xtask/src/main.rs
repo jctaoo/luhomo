@@ -12,6 +12,7 @@ async fn main() -> Result<()> {
     match task.as_str() {
         "fetch-core" => fetch_core().await?,
         "dev" => dev().await?,
+        "gui" => gui().await?,
         "bundle" => bundle().await?,
         _ => print_help(),
     }
@@ -23,6 +24,7 @@ fn print_help() {
     println!("Commands:");
     println!("  fetch-core   Download mihomo kernel to target/<profile>/");
     println!("  dev          fetch-core + cargo run -p luhomo-service");
+    println!("  gui          cargo run -p luhomo-gui");
     println!("  bundle       Build release binaries and package them into dist/");
 }
 
@@ -69,6 +71,14 @@ async fn dev() -> Result<()> {
     cmd!(sh, "cargo run -p luhomo-service")
         .run()
         .context("failed to run luhomo-service")?;
+    Ok(())
+}
+
+async fn gui() -> Result<()> {
+    let sh = Shell::new().context("failed to create shell")?;
+    cmd!(sh, "cargo run -p luhomo-gui")
+        .run()
+        .context("failed to run luhomo-gui")?;
     Ok(())
 }
 

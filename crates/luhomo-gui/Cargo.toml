@@ -9,4 +9,4 @@ license.workspace = true
 gpui-unofficial = "1.10.0"
 gpui_platform = { version = "1.10.0", package = "gpui-platform-gpui-unofficial" }
 raw-window-handle = "0.6.2"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+platforms = { path = "../platforms" }

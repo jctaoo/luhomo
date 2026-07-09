@@ -18,13 +18,10 @@ impl Render for RootView {
 }
 
 fn main() {
-    Application::new().run(|app: &mut App| {
+    gpui_platform::application().run(|app: &mut App| {
         app.open_window(
             WindowOptions {
-                window_bounds: Some(WindowBounds::centered(
-                    size(px(800.0), px(600.0)),
-                    app,
-                )),
+                window_bounds: Some(WindowBounds::centered(size(px(800.0), px(600.0)), app)),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Luhomo".into()),
                     appears_transparent: false,
@@ -34,7 +31,11 @@ fn main() {
                 window_min_size: Some(size(px(400.0), px(300.0))),
                 ..Default::default()
             },
-            |_window, app| {
+            |window, app| {
+                platforms::window_manage::configure_window_max_size(window, 1200.0, 800.0)
+                    .unwrap_or_else(|e| {
+                        eprintln!("configure_window_max_size failed: {e}");
+                    });
                 app.new(|_cx| RootView)
             },
         )

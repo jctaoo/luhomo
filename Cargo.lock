@@ -3461,8 +3461,8 @@ version = "0.1.0"
 dependencies = [
  "gpui-platform-gpui-unofficial",
  "gpui-unofficial",
+ "platforms",
  "raw-window-handle",
- "windows 0.62.2",
 ]
 
 [[package]]
@@ -4497,6 +4497,15 @@ name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
+
+[[package]]
+name = "platforms"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "raw-window-handle",
+ "windows 0.62.2",
+]
 
 [[package]]
 name = "png"
