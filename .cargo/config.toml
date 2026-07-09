@@ -2,3 +2,4 @@
 xtask = "run -p xtask --"
 dev = "run -p xtask -- dev"
 fetch-core = "run -p xtask -- fetch-core"
+bundle = "run -p xtask -- bundle"

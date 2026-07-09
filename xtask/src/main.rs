@@ -12,6 +12,7 @@ async fn main() -> Result<()> {
     match task.as_str() {
         "fetch-core" => fetch_core().await?,
         "dev" => dev().await?,
+        "bundle" => bundle().await?,
         _ => print_help(),
     }
     Ok(())
@@ -22,10 +23,14 @@ fn print_help() {
     println!("Commands:");
     println!("  fetch-core   Download mihomo kernel to target/<profile>/");
     println!("  dev          fetch-core + cargo run -p luhomo-service");
+    println!("  bundle       Build release binaries and package them into dist/");
 }
 
 async fn fetch_core() -> Result<()> {
-    let out_dir = out_dir()?;
+    fetch_core_to_dir(&out_dir()?).await
+}
+
+async fn fetch_core_to_dir(out_dir: &Path) -> Result<()> {
     let exe_path = out_dir.join("mihomo.exe");
 
     if exe_path.exists() {
@@ -65,6 +70,45 @@ async fn dev() -> Result<()> {
         .run()
         .context("failed to run luhomo-service")?;
     Ok(())
+}
+
+async fn bundle() -> Result<()> {
+    let sh = Shell::new().context("failed to create shell")?;
+
+    println!("Building release binaries...");
+    cmd!(sh, "cargo build --workspace --release").run()?;
+
+    let root = workspace_root();
+    let release_dir = root.join("target").join("release");
+    let dist_dir = root.join("dist");
+
+    if dist_dir.exists() {
+        fs::remove_dir_all(&dist_dir).context("clean dist/ failed")?;
+    }
+    fs::create_dir_all(&dist_dir).context("create dist/ failed")?;
+
+    println!("Downloading mihomo kernel...");
+    fetch_core_to_dir(&release_dir).await?;
+
+    let ext = env::consts::EXE_SUFFIX;
+    let binaries = ["luhomo-gui", "luhomo-service", "luhomo-cli", "mihomo"];
+
+    for name in binaries {
+        let file_name = format!("{}{}", name, ext);
+        let src = release_dir.join(&file_name);
+        let dst = dist_dir.join(&file_name);
+        fs::copy(&src, &dst).with_context(|| format!("copy {} failed", src.display()))?;
+    }
+
+    println!("Bundle ready at {}", dist_dir.display());
+    Ok(())
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask should be in workspace root")
+        .to_path_buf()
 }
 
 fn out_dir() -> Result<PathBuf> {
