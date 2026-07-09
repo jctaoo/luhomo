@@ -6,9 +6,9 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-reqwest = "0"
-zip = "2"
+zip = "8.6.0"
 flate2 = "1"
-octocrab = "0"
 tokio = { version = "1", features = ["full"] }
-xshell = "0"
+xshell = "0.2.7"
+reqwest = { version = "0.13.4" }
+octocrab = { version = "0.54.0" }
