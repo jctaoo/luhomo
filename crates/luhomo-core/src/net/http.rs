@@ -3,7 +3,7 @@ use http::{HeaderMap, Response};
 use serde::{de::DeserializeOwned, Serialize};
 
 pub trait HttpClient: Send + Sync {
-    type Error: std::fmt::Debug + Send + Sync;
+    type Error: std::fmt::Debug + Send + Sync + 'static;
 
     async fn get(
         &self,

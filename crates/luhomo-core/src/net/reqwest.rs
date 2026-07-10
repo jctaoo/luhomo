@@ -3,6 +3,12 @@ use http::{HeaderMap, Response};
 
 use crate::net::http::HttpClient;
 
+impl From<reqwest::Client> for ReqwestClient {
+    fn from(client: reqwest::Client) -> Self {
+        ReqwestClient(client)
+    }
+}
+
 pub struct ReqwestClient(pub reqwest::Client);
 
 impl HttpClient for ReqwestClient {
