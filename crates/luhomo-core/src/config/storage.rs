@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::config::models::ConfigurationItem;
@@ -26,7 +26,7 @@ impl ConfigurationStorage {
         }
     }
 
-    pub fn base_dir(&self) -> &PathBuf {
+    pub fn base_dir(&self) -> &Path {
         &self.base_dir
     }
 

@@ -4,7 +4,7 @@ pub mod storage;
 
 use bytes::Bytes;
 #[cfg(feature = "reqwest")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use fetcher::{ConfigurationFetcher, ConfigurationFetcherError};
@@ -106,7 +106,7 @@ impl LocalConfigurationManager {
         }
     }
 
-    pub fn storage_dir(&self) -> &PathBuf {
+    pub fn storage_dir(&self) -> &Path {
         self.storage.base_dir()
     }
 }
