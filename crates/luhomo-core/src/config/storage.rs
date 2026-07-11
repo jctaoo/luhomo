@@ -26,6 +26,10 @@ impl ConfigurationStorage {
         }
     }
 
+    pub fn base_dir(&self) -> &PathBuf {
+        &self.base_dir
+    }
+
     fn indexes_path(&self) -> PathBuf {
         self.base_dir.join("indexes.json")
     }
