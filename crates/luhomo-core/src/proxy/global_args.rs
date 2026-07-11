@@ -70,24 +70,29 @@ pub struct ProxyRunningArguments {
     /// 外部控制器（API）监听地址
     ///
     /// 如 `127.0.0.1:9090`，可以修改为 `0.0.0.0` 来监听所有 IP
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub external_controller: Option<String>,
 
     /// Unix socket API 监听地址
     ///
     /// 从 Unix socket 访问 API 不会验证 secret，如果开启请自行保证安全问题
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub external_controller_unix: Option<String>,
 
     /// Windows namedpipe API 监听地址
     ///
     /// 从 Windows namedpipe 访问 API 不会验证 secret，如果开启请自行保证安全问题
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub external_controller_pipe: Option<String>,
 
     /// 自定义外部用户界面名字
     ///
     /// 合并为 `external-ui/名字`，非必须
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub external_ui_name: Option<String>,
 
     /// 自定义外部用户界面下载地址
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub external_ui_url: Option<String>,
 }
 
