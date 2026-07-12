@@ -24,6 +24,9 @@ pub enum ProxyCoreError {
     #[error("process is not running")]
     NotRunning,
 
+    #[error("process exited before its API became ready (exit code: {exit_code:?})")]
+    ExitedBeforeReady { exit_code: Option<i32> },
+
     #[error("failed to spawn process: {0}")]
     SpawnFailed(#[source] std::io::Error),
 
@@ -193,10 +196,24 @@ impl ProxyCoreExecution {
 
         let pid = child.id().unwrap_or(0);
 
-        // 启动监控任务
         let shutdown_token = tokio_util::sync::CancellationToken::new();
         self.shutdown_token = Some(shutdown_token.clone());
 
+        let _ = tokio::select! {
+            biased;
+            _ = shutdown_token.cancelled() => Err(ProxyCoreError::ExitedBeforeReady { exit_code: None }),
+            exit = child.wait() => {
+                if let Ok(exit_status) = exit {
+                    let code = exit_status.code();
+                    Err(ProxyCoreError::ExitedBeforeReady { exit_code: code })
+                } else {
+                    Err(ProxyCoreError::ExitedBeforeReady { exit_code: None })
+                }
+            },
+            result = self.ensure_api_ready(args, Duration::from_secs(3)) => result,
+        };
+
+        // 启动监控任务
         let status_tx = self.status_tx.clone();
         let auto_restart = self.auto_restart;
 
@@ -366,6 +383,8 @@ impl ProxyCoreExecution {
             })
             .await
             .map_err(ProxyCoreError::SocketChannelCheckTimeout)??;
+
+            return Ok(());
         }
 
         if let Some(ref addr) = args.external_controller {
@@ -376,6 +395,8 @@ impl ProxyCoreExecution {
             })
             .await
             .map_err(ProxyCoreError::SocketChannelCheckTimeout)??;
+
+            return Ok(());
         }
 
         Ok(())
