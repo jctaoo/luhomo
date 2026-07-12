@@ -276,7 +276,7 @@ impl ProxyCoreExecution {
 
         // if check api_ready fails, we should shutdown the process and return error
         if let Err(check_err) = self.ensure_api_ready(args, Duration::from_secs(3)).await {
-            self.shutdown().await?;
+            let _ = self.shutdown().await;
             return Err(check_err);
         }
 
