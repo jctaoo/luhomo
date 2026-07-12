@@ -1,0 +1,1 @@
+pub const CORE_DISPLAY_NAME: &str = "luhomo";
