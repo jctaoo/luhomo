@@ -210,12 +210,8 @@ impl ProxyCoreExecution {
             }
         };
 
-        let shutdown_token = tokio_util::sync::CancellationToken::new();
-        self.shutdown_token = Some(shutdown_token.clone());
-
         let ready_result = tokio::select! {
             biased;
-            _ = shutdown_token.cancelled() => Err(ProxyCoreError::NotRunning),
             exit = child.wait() => {
                 let exit_code = exit.ok().and_then(|status| status.code());
                 Err(ProxyCoreError::ExitedBeforeReady { exit_code })
@@ -234,15 +230,15 @@ impl ProxyCoreExecution {
                     self.status_tx.send_replace(ProxyCoreStatus::Stopped);
                 }
                 _ => {
-                    self.status_tx
-                        .send_replace(ProxyCoreStatus::Crashed { exit_code: None });
+                    self.status_tx.send_replace(ProxyCoreStatus::Idle);
                 }
             }
 
-            self.shutdown_token = None;
-
             return Err(error);
         }
+
+        let shutdown_token = tokio_util::sync::CancellationToken::new();
+        self.shutdown_token = Some(shutdown_token.clone());
 
         // 启动监控任务
         let status_tx = self.status_tx.clone();
