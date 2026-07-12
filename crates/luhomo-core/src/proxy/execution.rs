@@ -226,9 +226,6 @@ impl ProxyCoreExecution {
                 ProxyCoreError::ExitedBeforeReady { exit_code } => {
                     self.status_tx.send_replace(ProxyCoreStatus::Crashed { exit_code });
                 }
-                ProxyCoreError::NotRunning => {
-                    self.status_tx.send_replace(ProxyCoreStatus::Stopped);
-                }
                 _ => {
                     self.status_tx.send_replace(ProxyCoreStatus::Idle);
                 }
