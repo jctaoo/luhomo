@@ -47,9 +47,9 @@ enum MonitorEvent {
 
 /// 代理核心进程管理器
 ///
-/// 负责 proxy (比如 mihomo) 内核的启动、监控、自动重启和关闭。
+/// 负责 proxy（比如 mihomo）内核的启动、监控、自动重启和关闭。
 ///
-/// 在决定不使用 proxy 内核进程时，请显示调用 [`ProxyCoreExecution::shutdown`] 来关闭进程，
+/// 在决定不使用 proxy 内核进程时，请显式调用 [`ProxyCoreExecution::shutdown`] 来关闭进程，
 /// 否则在 [`ProxyCoreExecution`] 被 drop 时会尝试发送关闭信号，但无法保证进程已退出。
 ///
 /// TODO: try Windows Job Object and Linux prctl(PR_SET_PDEATHSIG, SIGKILL)
@@ -57,23 +57,51 @@ enum MonitorEvent {
 /// # 使用示例
 ///
 /// ```no_run
-/// let mut exec = ProxyCoreExecution::new()
-///     .executable("/path/to/mihomo")
-///     .auto_restart(true);
+/// use luhomo_core::config::models::{ConfigurationItem, ConfigurationSource};
+/// use luhomo_core::proxy::execution::ProxyCoreExecution;
+/// use luhomo_core::proxy::global_args::ProxyRunningArguments;
+/// use luhomo_core::proxy::{ProxyCoreStatus, ProxyCoreType};
 ///
-/// exec.launch(&args).await?;
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let configuration_item = ConfigurationItem::builder()
+///         .source(ConfigurationSource::local_file().path("config.yaml").call())
+///         .display_name("example")
+///         .build();
+///     struct Config(serde_yaml::Value);
 ///
-/// // 订阅状态变化
-/// let mut rx = exec.status_watcher();
-/// while rx.changed().await.is_ok() {
-///     match rx.borrow().clone() {
-///         ProxyCoreStatus::Running { pid } => println!("running, pid={pid}"),
-///         ProxyCoreStatus::Crashed { exit_code } => println!("crashed, code={exit_code:?}"),
-///         _ => {}
+///     impl AsRef<serde_yaml::Value> for Config {
+///         fn as_ref(&self) -> &serde_yaml::Value {
+///             &self.0
+///         }
 ///     }
-/// }
 ///
-/// exec.shutdown().await?;
+///     let config = Config(serde_yaml::Value::Mapping(Default::default()));
+///     let args = ProxyRunningArguments::default();
+///
+///     let mut exec = ProxyCoreExecution::new(ProxyCoreType::Mihomo)
+///         .executable("/path/to/mihomo")
+///         .auto_restart(true);
+///
+///     exec.launch(&configuration_item, &config, &args).await?;
+///
+///     // 订阅状态变化
+///     let mut rx = exec.status_watcher();
+///     let watcher = tokio::spawn(async move {
+///         while rx.changed().await.is_ok() {
+///             let status = rx.borrow().clone();
+///             println!("status: {status:?}");
+///             if matches!(status, ProxyCoreStatus::Stopped) {
+///                 break;
+///             }
+///         }
+///     });
+///
+///     // 应用结束使用内核时，显式关闭它并等待状态监听任务结束。
+///     exec.shutdown().await?;
+///     watcher.await?;
+///     Ok(())
+/// }
 /// ```
 pub struct ProxyCoreExecution {
     core_type: ProxyCoreType,
@@ -90,7 +118,7 @@ pub struct ProxyCoreExecution {
 }
 
 impl ProxyCoreExecution {
-    /// 创建新的执行实例，自动查找 proxy core 可执行文件
+    /// 创建新的执行实例，并按内核类型查找 proxy core 可执行文件。
     pub fn new(core_type: ProxyCoreType) -> Self {
         let (status_tx, status_rx) = watch::channel(ProxyCoreStatus::Idle);
         let executable = core_type.find_executable();
@@ -121,8 +149,9 @@ impl ProxyCoreExecution {
 impl ProxyCoreExecution {
     /// 启动 proxy core 内核
     ///
-    /// 传入 [`ProxyRunningArguments`] 会序列化为 YAML 配置文件，并启动
-    /// 一个后台监控任务：利用 [`Child::wait`] 挂起监听，进程崩溃时自动重启。
+    /// 将代理配置与 [`ProxyRunningArguments`] 合并后写入运行时 YAML 文件，
+    /// 然后启动一个后台监控任务。监控任务利用 [`Child::wait`] 等待进程退出；
+    /// 若退出并非由 [`ProxyCoreExecution::shutdown`] 触发，则在启用自动重启时尝试重新启动。
     pub async fn launch<C>(
         &mut self,
         configuration_item: &ConfigurationItem,
@@ -187,7 +216,7 @@ impl ProxyCoreExecution {
                             Ok(exit_status) => {
                                 // 主动关闭（shutdown 已发出信号）
                                 if shutdown_token.is_cancelled() {
-                                   status_tx.send_replace(ProxyCoreStatus::Stopped);
+                                    status_tx.send_replace(ProxyCoreStatus::Stopped);
                                     break;
                                 }
 
@@ -353,7 +382,8 @@ impl ProxyCoreExecution {
     }
 
     /// 将传入的配置与运行参数合并，并写入临时 YAML 文件
-    /// 文件写入路径为 `std::env::temp_dir()/${core_type::DisplayName}/${config uuid}.yaml`，返回该路径。
+    /// 文件写入路径为 `std::env::temp_dir()/{core_type}/{configuration uuid}.yaml`，
+    /// 例如 `<temp>/mihomo/550e8400-e29b-41d4-a716-446655440000.yaml`，并返回该路径。
     async fn merge_and_write_runtime_cfg<C>(
         &self,
         item: &ConfigurationItem,
