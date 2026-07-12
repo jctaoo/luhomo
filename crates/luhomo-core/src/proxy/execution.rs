@@ -27,6 +27,9 @@ pub enum ProxyCoreError {
     #[error("process exited before its API became ready (exit code: {exit_code:?})")]
     ExitedBeforeReady { exit_code: Option<i32> },
 
+    #[error("unknown process id")]
+    UnknownPID,
+
     #[error("failed to spawn process: {0}")]
     SpawnFailed(#[source] std::io::Error),
 
@@ -194,24 +197,40 @@ impl ProxyCoreExecution {
         let mut command = self.create_child_command(&config_path);
         let mut child = command.spawn().map_err(ProxyCoreError::SpawnFailed)?;
 
-        let pid = child.id().unwrap_or(0);
+        let pid = match child.id() {
+            Some(pid) => pid,
+            None => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+
+                self.status_tx
+                    .send_replace(ProxyCoreStatus::Crashed { exit_code: None });
+
+                return Err(ProxyCoreError::UnknownPID);
+            }
+        };
 
         let shutdown_token = tokio_util::sync::CancellationToken::new();
         self.shutdown_token = Some(shutdown_token.clone());
 
-        let _ = tokio::select! {
+        let ready_result = tokio::select! {
             biased;
             _ = shutdown_token.cancelled() => Err(ProxyCoreError::ExitedBeforeReady { exit_code: None }),
             exit = child.wait() => {
-                if let Ok(exit_status) = exit {
-                    let code = exit_status.code();
-                    Err(ProxyCoreError::ExitedBeforeReady { exit_code: code })
-                } else {
-                    Err(ProxyCoreError::ExitedBeforeReady { exit_code: None })
-                }
+                let exit_code = exit.ok().and_then(|status| status.code());
+                Err(ProxyCoreError::ExitedBeforeReady { exit_code })
             },
             result = self.ensure_api_ready(args, Duration::from_secs(3)) => result,
         };
+        if let Err(error) = ready_result {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+
+            self.status_tx
+                .send_replace(ProxyCoreStatus::Crashed { exit_code: None });
+
+            return Err(error);
+        }
 
         // 启动监控任务
         let status_tx = self.status_tx.clone();
@@ -262,10 +281,22 @@ impl ProxyCoreExecution {
                                 }
 
                                 match command.spawn() {
-                                    Ok(new_child) => {
-                                        let pid = new_child.id().unwrap_or(0);
+                                    Ok(mut new_child) => {
+                                        let new_pid = match new_child.id() {
+                                            Some(pid) => pid,
+                                            None => {
+                                                let _ = new_child.start_kill();
+                                                let _ = new_child.wait().await;
+
+                                                // TODO: produce UnknownPID error
+                                                status_tx.send_replace(ProxyCoreStatus::Crashed { exit_code: None });
+
+                                                break;
+                                            }
+                                        };
+
                                         child = new_child;
-                                        status_tx.send_replace(ProxyCoreStatus::Running { pid });
+                                        status_tx.send_replace(ProxyCoreStatus::Running { pid: new_pid });
                                     }
                                     Err(_) => {
                                         status_tx.send_replace(ProxyCoreStatus::Crashed { exit_code: None });
@@ -290,12 +321,6 @@ impl ProxyCoreExecution {
 
         self.monitor_handle = Some(handle);
         let _ = self.status_tx.send_replace(ProxyCoreStatus::Running { pid });
-
-        // if check api_ready fails, we should shutdown the process and return error
-        if let Err(check_err) = self.ensure_api_ready(args, Duration::from_secs(3)).await {
-            let _ = self.shutdown().await;
-            return Err(check_err);
-        }
 
         Ok(())
     }
