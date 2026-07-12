@@ -215,7 +215,7 @@ impl ProxyCoreExecution {
 
         let ready_result = tokio::select! {
             biased;
-            _ = shutdown_token.cancelled() => Err(ProxyCoreError::ExitedBeforeReady { exit_code: None }),
+            _ = shutdown_token.cancelled() => Err(ProxyCoreError::NotRunning),
             exit = child.wait() => {
                 let exit_code = exit.ok().and_then(|status| status.code());
                 Err(ProxyCoreError::ExitedBeforeReady { exit_code })
@@ -226,8 +226,20 @@ impl ProxyCoreExecution {
             let _ = child.start_kill();
             let _ = child.wait().await;
 
-            self.status_tx
-                .send_replace(ProxyCoreStatus::Crashed { exit_code: None });
+            match error {
+                ProxyCoreError::ExitedBeforeReady { exit_code } => {
+                    self.status_tx.send_replace(ProxyCoreStatus::Crashed { exit_code });
+                }
+                ProxyCoreError::NotRunning => {
+                    self.status_tx.send_replace(ProxyCoreStatus::Stopped);
+                }
+                _ => {
+                    self.status_tx
+                        .send_replace(ProxyCoreStatus::Crashed { exit_code: None });
+                }
+            }
+
+            self.shutdown_token = None;
 
             return Err(error);
         }
@@ -320,7 +332,7 @@ impl ProxyCoreExecution {
         });
 
         self.monitor_handle = Some(handle);
-        let _ = self.status_tx.send_replace(ProxyCoreStatus::Running { pid });
+        self.status_tx.send_replace(ProxyCoreStatus::Running { pid });
 
         Ok(())
     }
