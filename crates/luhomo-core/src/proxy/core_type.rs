@@ -29,9 +29,21 @@ impl ProxyCoreType {
         }
     }
 
-    pub fn build_running_args(&self, target_cfg_file: impl AsRef<Path>) -> Vec<String> {
+    /// 构建 proxy core 的运行参数。
+    ///
+    /// Mihomo 的 `-d` 指定运行目录，`-f` 指定配置文件。
+    pub fn build_running_args(
+        &self,
+        core_running_dir: impl AsRef<Path>,
+        target_cfg_file: impl AsRef<Path>,
+    ) -> Vec<String> {
         match self {
-            ProxyCoreType::Mihomo => vec!["-f".to_string(), target_cfg_file.as_ref().to_string_lossy().to_string()],
+            ProxyCoreType::Mihomo => vec![
+                "-d".to_string(),
+                core_running_dir.as_ref().to_string_lossy().to_string(),
+                "-f".to_string(),
+                target_cfg_file.as_ref().to_string_lossy().to_string(),
+            ],
         }
     }
 }
@@ -92,4 +104,16 @@ fn find_cargo_workspace_root(manifest_dir: &Path) -> Option<&Path> {
     manifest_dir.ancestors().find(|directory| {
         std::fs::read_to_string(directory.join("Cargo.toml")).is_ok_and(|cargo_toml| cargo_toml.contains("[workspace]"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mihomo_running_args_include_runtime_dir_and_config_file() {
+        let args = ProxyCoreType::Mihomo.build_running_args("runtime", "runtime/config.yaml");
+
+        assert_eq!(args, ["-d", "runtime", "-f", "runtime/config.yaml"]);
+    }
 }

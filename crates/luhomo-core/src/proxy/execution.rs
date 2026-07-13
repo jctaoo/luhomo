@@ -11,7 +11,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// 代理核心错误
 #[derive(Error, Debug)]
@@ -527,7 +527,9 @@ impl ProxyCoreExecution {
         config_path: impl AsRef<Path>,
         log_dir: impl AsRef<Path>,
     ) -> std::io::Result<Command> {
-        let running_args = self.core_type.build_running_args(&config_path);
+        let running_args = self
+            .core_type
+            .build_running_args(&self.runtime_dir, &config_path);
         let log_dir = log_dir.as_ref();
 
         let core_name = self.core_type.as_ref();
