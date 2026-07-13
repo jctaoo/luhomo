@@ -11,7 +11,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// 代理核心错误
 #[derive(Error, Debug)]
@@ -554,6 +554,7 @@ impl ProxyCoreExecution {
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .kill_on_drop(true);
+        info!(command = ?cmd, "proxy core command dry run");
         Ok(cmd)
     }
 

@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use luhomo_core::{
     config::{
         ConfigurationManager, LocalConfigurationManager,
-        models::{ConfigurationSource, UpdateStrategy},
+        models::{ConfigurationItem, ConfigurationSource, UpdateStrategy},
     },
     proxy::{
         ProxyCoreType,
@@ -25,26 +25,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_target(false)
         .init();
 
-    let subscription_url = read_input("订阅链接: ")?;
-    let subscription_url = Url::parse(&subscription_url)?;
-
     let storage_dir = std::env::temp_dir().join("luhomo-play-config");
     println!("配置存储目录: {}", storage_dir.display());
     let manager = LocalConfigurationManager::new(storage_dir.clone(), reqwest::Client::new());
-    let source = ConfigurationSource::RemoteUrl {
-        url: subscription_url.clone(),
-        update_strategy: UpdateStrategy {
-            auto_update: false,
-            interval: None,
-        },
-        homepage: None,
-        use_proxy: false,
-        // 与 Clash Party 的默认订阅请求 UA 保持一致。
-        user_agent: Some(format!("mihomo.party/v{} (clash.meta)", env!("CARGO_PKG_VERSION"))),
+    let items = manager.list().await?;
+    let item = if items.is_empty() {
+        add_subscription(&manager).await?
+    } else {
+        select_configuration(&items)?
     };
-
-    println!("正在通过 LocalConfigurationManager 下载并缓存订阅配置...");
-    let item = manager.add(source).await?;
     let content = manager.get_content(&item.uuid).await?;
     // `content` 就是订阅原始 YAML，直接作为 runtime manifest 的基础配置。
 
@@ -83,4 +72,40 @@ fn read_input_with_default(prompt: &str, default: &str) -> io::Result<String> {
     Ok((!input.is_empty())
         .then_some(input)
         .unwrap_or_else(|| default.to_owned()))
+}
+
+async fn add_subscription(
+    manager: &LocalConfigurationManager,
+) -> Result<ConfigurationItem, Box<dyn std::error::Error>> {
+    println!("没有已缓存的配置，请输入订阅链接。");
+    let subscription_url = Url::parse(&read_input("订阅链接: ")?)?;
+    let source = ConfigurationSource::RemoteUrl {
+        url: subscription_url,
+        update_strategy: UpdateStrategy {
+            auto_update: false,
+            interval: None,
+        },
+        homepage: None,
+        use_proxy: false,
+        // 与 Clash Party 的默认订阅请求 UA 保持一致。
+        user_agent: Some(format!("mihomo.party/v{} (clash.meta)", env!("CARGO_PKG_VERSION"))),
+    };
+
+    println!("正在通过 LocalConfigurationManager 下载并缓存订阅配置...");
+    Ok(manager.add(source).await?)
+}
+
+fn select_configuration(items: &[ConfigurationItem]) -> io::Result<ConfigurationItem> {
+    println!("发现已缓存的配置：");
+    for (index, item) in items.iter().enumerate() {
+        println!("  {}. {} ({})", index + 1, item.display_name, item.uuid);
+    }
+
+    loop {
+        let input = read_input(&format!("请选择配置 [1-{}]: ", items.len()))?;
+        match input.parse::<usize>() {
+            Ok(index) if (1..=items.len()).contains(&index) => return Ok(items[index - 1].clone()),
+            _ => println!("请输入 1 到 {} 之间的编号。", items.len()),
+        }
+    }
 }
