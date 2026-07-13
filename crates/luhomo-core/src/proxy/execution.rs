@@ -211,14 +211,18 @@ impl ProxyCoreExecution {
 
         self.status_tx.send_replace(ProxyCoreStatus::Starting);
 
+        self.prepare_runtime_dir().await?;
+
         // Write to a target config file
         let config_path = self
             .merge_and_write_runtime_cfg(configuration_item, config, args)
             .await?;
 
+        let log_dir = self.prepare_core_log_dir().await?;
+
         // Spawn the child process
         let mut command = self
-            .create_child_command(&config_path)
+            .create_child_command(&config_path, &log_dir)
             .map_err(ProxyCoreError::OutputRedirectFailed)?;
         let mut child = command.spawn().map_err(ProxyCoreError::SpawnFailed)?;
 
@@ -471,6 +475,8 @@ impl ProxyCoreExecution {
 
     /// 将传入的配置与运行参数合并，并写入临时 YAML 文件
     /// 文件写入路径为 `{runtime_dir}/{configuration uuid}.yaml`，并返回该路径。
+    ///
+    /// 调用方须先通过 [`Self::prepare_runtime_dir`] 准备运行目录。
     async fn merge_and_write_runtime_cfg(
         &self,
         item: &ConfigurationItem,
@@ -483,19 +489,6 @@ impl ProxyCoreExecution {
             .await
             .map_err(ProxyCoreError::ConfigError)?;
 
-        tokio::fs::create_dir_all(&self.runtime_dir)
-            .await
-            .map_err(ProxyCoreError::ConfigError)?;
-        let log_dir = self.runtime_dir.join("logs");
-        tokio::fs::create_dir_all(&log_dir)
-            .await
-            .map_err(ProxyCoreError::ConfigError)?;
-        info!(
-            runtime_dir = %self.runtime_dir.display(),
-            log_dir = %log_dir.display(),
-            "prepared proxy core runtime directories"
-        );
-
         // Use the configuration item's UUID as the filename
         let target_path = self.runtime_dir.join(format!("{}.yaml", item.uuid));
 
@@ -507,9 +500,35 @@ impl ProxyCoreExecution {
         Ok(target_path)
     }
 
-    fn create_child_command(&self, config_path: impl AsRef<Path>) -> std::io::Result<Command> {
-        let running_args = self.core_type.build_running_args(&config_path);
+    /// 创建 proxy core 运行目录，用于保存运行时配置和其他运行产物。
+    async fn prepare_runtime_dir(&self) -> Result<(), ProxyCoreError> {
+        tokio::fs::create_dir_all(&self.runtime_dir)
+            .await
+            .map_err(ProxyCoreError::ConfigError)?;
+        info!(
+            runtime_dir = %self.runtime_dir.display(),
+            "prepared proxy core runtime directory"
+        );
+        Ok(())
+    }
+
+    /// 创建 proxy core 输出日志目录。
+    async fn prepare_core_log_dir(&self) -> Result<PathBuf, ProxyCoreError> {
         let log_dir = self.runtime_dir.join("logs");
+        tokio::fs::create_dir_all(&log_dir)
+            .await
+            .map_err(ProxyCoreError::OutputRedirectFailed)?;
+        info!(log_dir = %log_dir.display(), "prepared proxy core log directory");
+        Ok(log_dir)
+    }
+
+    fn create_child_command(
+        &self,
+        config_path: impl AsRef<Path>,
+        log_dir: impl AsRef<Path>,
+    ) -> std::io::Result<Command> {
+        let running_args = self.core_type.build_running_args(&config_path);
+        let log_dir = log_dir.as_ref();
 
         let core_name = self.core_type.as_ref();
         let stdout_log = log_dir.join(format!("{core_name}.stdout.log"));
