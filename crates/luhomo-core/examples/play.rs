@@ -15,6 +15,7 @@ use luhomo_core::{
         global_args::ProxyRunningArguments,
     },
 };
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
@@ -49,11 +50,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ProxyApiStream::Local(_) => println!("mihomo 已启动，已连接本地 API。"),
     }
 
-    println!("按 Enter 停止 mihomo。");
-    let mut line = String::new();
-    io::stdin().read_line(&mut line)?;
+    println!("按 Enter 或 Ctrl+C 停止 mihomo。");
+    wait_for_stop_signal().await?;
     execution.shutdown().await?;
     println!("mihomo 已停止。");
+
+    Ok(())
+}
+
+async fn wait_for_stop_signal() -> Result<(), Box<dyn std::error::Error>> {
+    let mut stdin = BufReader::new(tokio::io::stdin());
+    let mut line = String::new();
+
+    tokio::select! {
+        result = stdin.read_line(&mut line) => {
+            result?;
+        }
+        result = tokio::signal::ctrl_c() => {
+            result?;
+            println!("收到 Ctrl+C，正在停止 mihomo...");
+        }
+    }
 
     Ok(())
 }
