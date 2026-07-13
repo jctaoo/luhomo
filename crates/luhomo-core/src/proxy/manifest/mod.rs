@@ -1,9 +1,8 @@
 /// manifest module is for managing the runtime manifest of the proxy core.
-
 pub mod mihomo;
 
-use serde::de::DeserializeOwned;
-use uuid::Bytes;
+use bytes::Bytes;
+use serde::Serialize;
 
 use crate::proxy::global_args::ProxyRunningArguments;
 
@@ -14,5 +13,5 @@ pub trait ProxyCoreManifest {
         args: &ProxyRunningArguments,
     ) -> Result<Bytes, std::io::Error>
     where
-        C: DeserializeOwned;
+        C: Serialize;
 }

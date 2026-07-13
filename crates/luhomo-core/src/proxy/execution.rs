@@ -3,8 +3,8 @@ use crate::proxy::core_type::ProxyCoreType;
 use crate::proxy::global_args::ProxyRunningArguments;
 use crate::proxy::manifest::ProxyCoreManifest;
 use crate::proxy::status::ProxyCoreStatus;
-use interprocess::local_socket::traits::tokio::Stream;
-use serde::de::DeserializeOwned;
+use interprocess::local_socket::traits::tokio::Stream as _;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
@@ -44,11 +44,25 @@ pub enum ProxyCoreError {
 
     #[error("socket channel check timed out")]
     SocketChannelCheckTimeout(#[source] tokio::time::error::Elapsed),
+
+    #[error("no proxy core API endpoint is configured")]
+    ApiEndpointNotConfigured,
 }
 
 enum MonitorEvent {
     ShutdownRequested,
     ChildExited(std::io::Result<ExitStatus>),
+}
+
+/// 已连接到代理核心 API 的流。
+///
+/// [`ProxyCoreExecution::launch`] 在启动完成时返回此连接；调用方可直接使用它发送
+/// API 请求，而不必重新建立连接。
+pub enum ProxyApiStream {
+    /// Unix socket 或 Windows named pipe API 连接。
+    Local(interprocess::local_socket::tokio::Stream),
+    /// TCP API 连接。
+    Tcp(tokio::net::TcpStream),
 }
 
 /// 代理核心进程管理器
@@ -74,6 +88,7 @@ enum MonitorEvent {
 ///         .source(ConfigurationSource::local_file().path("config.yaml").call())
 ///         .display_name("example")
 ///         .build();
+///     #[derive(serde::Serialize)]
 ///     struct Config(serde_yaml::Value);
 ///
 ///     impl AsRef<serde_yaml::Value> for Config {
@@ -89,7 +104,7 @@ enum MonitorEvent {
 ///         .executable("/path/to/mihomo")
 ///         .auto_restart(true);
 ///
-///     exec.launch(&configuration_item, &config, &args).await?;
+///     let _api_stream = exec.launch(&configuration_item, &config, &args).await?;
 ///
 ///     // 订阅状态变化
 ///     let mut rx = exec.status_watcher();
@@ -158,14 +173,16 @@ impl ProxyCoreExecution {
     /// 将代理配置与 [`ProxyRunningArguments`] 合并后写入运行时 YAML 文件，
     /// 然后启动一个后台监控任务。监控任务利用 [`Child::wait`] 等待进程退出；
     /// 若退出并非由 [`ProxyCoreExecution::shutdown`] 触发，则在启用自动重启时尝试重新启动。
+    ///
+    /// 返回已就绪且已连接的 API 流。
     pub async fn launch<C>(
         &mut self,
         configuration_item: &ConfigurationItem,
         config: impl AsRef<C>,
         args: &ProxyRunningArguments,
-    ) -> Result<(), ProxyCoreError>
+    ) -> Result<ProxyApiStream, ProxyCoreError>
     where
-        C: DeserializeOwned,
+        C: Serialize,
     {
         let running_pid = {
             let status = self.status_rx.borrow();
@@ -210,7 +227,7 @@ impl ProxyCoreExecution {
             }
         };
 
-        let ready_result = tokio::select! {
+        let api_stream = tokio::select! {
             biased;
             exit = child.wait() => {
                 let exit_code = exit.ok().and_then(|status| status.code());
@@ -218,21 +235,24 @@ impl ProxyCoreExecution {
             },
             result = self.ensure_api_ready(args, Duration::from_secs(3)) => result,
         };
-        if let Err(error) = ready_result {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
+        let api_stream = match api_stream {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
 
-            match error {
-                ProxyCoreError::ExitedBeforeReady { exit_code } => {
-                    self.status_tx.send_replace(ProxyCoreStatus::Crashed { exit_code });
+                match error {
+                    ProxyCoreError::ExitedBeforeReady { exit_code } => {
+                        self.status_tx.send_replace(ProxyCoreStatus::Crashed { exit_code });
+                    }
+                    _ => {
+                        self.status_tx.send_replace(ProxyCoreStatus::Idle);
+                    }
                 }
-                _ => {
-                    self.status_tx.send_replace(ProxyCoreStatus::Idle);
-                }
+
+                return Err(error);
             }
-
-            return Err(error);
-        }
+        };
 
         let shutdown_token = tokio_util::sync::CancellationToken::new();
         self.shutdown_token = Some(shutdown_token.clone());
@@ -327,7 +347,7 @@ impl ProxyCoreExecution {
         self.monitor_handle = Some(handle);
         self.status_tx.send_replace(ProxyCoreStatus::Running { pid });
 
-        Ok(())
+        Ok(api_stream)
     }
 
     /// 获取当前运行状态
@@ -373,9 +393,13 @@ impl ProxyCoreExecution {
     /// 依次尝试 Unix socket（通过 interprocess）、Windows namedpipe（通过 interprocess）, TCP。
     /// 如果配置中未开启对应的管道，则跳过相应的检查。
     ///
-    /// 如果没有配置任何 API 端点，则认为就绪。
-    async fn ensure_api_ready(&self, args: &ProxyRunningArguments, timeout: Duration) -> Result<(), ProxyCoreError> {
-        // 使用 interprocess 连接本地 socket，验证对端是否就绪
+    /// 如果没有配置任何 API 端点，则返回 [`ProxyCoreError::ApiEndpointNotConfigured`]。
+    async fn ensure_api_ready(
+        &self,
+        args: &ProxyRunningArguments,
+        timeout: Duration,
+    ) -> Result<ProxyApiStream, ProxyCoreError> {
+        // 使用 interprocess 连接本地 socket，验证对端是否就绪并返回连接。
 
         let mut name: Option<interprocess::local_socket::Name> = None;
 
@@ -406,7 +430,7 @@ impl ProxyCoreExecution {
 
         // 如果配置了本地 socket 名称，则尝试连接
         if let Some(name) = name {
-            let _ = tokio::time::timeout(timeout, async move {
+            let stream = tokio::time::timeout(timeout, async move {
                 interprocess::local_socket::tokio::Stream::connect(name)
                     .await
                     .map_err(ProxyCoreError::SocketChannelCheckFailed)
@@ -414,11 +438,11 @@ impl ProxyCoreExecution {
             .await
             .map_err(ProxyCoreError::SocketChannelCheckTimeout)??;
 
-            return Ok(());
+            return Ok(ProxyApiStream::Local(stream));
         }
 
         if let Some(ref addr) = args.external_controller {
-            let _ = tokio::time::timeout(timeout, async move {
+            let stream = tokio::time::timeout(timeout, async move {
                 tokio::net::TcpStream::connect(addr.as_str())
                     .await
                     .map_err(ProxyCoreError::SocketChannelCheckFailed)
@@ -426,10 +450,10 @@ impl ProxyCoreExecution {
             .await
             .map_err(ProxyCoreError::SocketChannelCheckTimeout)??;
 
-            return Ok(());
+            return Ok(ProxyApiStream::Tcp(stream));
         }
 
-        Ok(())
+        Err(ProxyCoreError::ApiEndpointNotConfigured)
     }
 
     /// 将传入的配置与运行参数合并，并写入临时 YAML 文件
@@ -442,7 +466,7 @@ impl ProxyCoreExecution {
         args: &ProxyRunningArguments,
     ) -> Result<PathBuf, ProxyCoreError>
     where
-        C: DeserializeOwned,
+        C: Serialize,
     {
         let manifest = self.core_type.get_manifest();
         let build_args = manifest
@@ -492,5 +516,35 @@ impl Drop for ProxyCoreExecution {
         if let Some(token) = &self.shutdown_token {
             token.cancel();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ensure_api_ready_returns_the_connected_tcp_stream() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let accept = tokio::spawn(async move { listener.accept().await.unwrap() });
+        let args = ProxyRunningArguments::builder().external_controller(address).build();
+
+        let stream = ProxyCoreExecution::new(ProxyCoreType::Mihomo)
+            .ensure_api_ready(&args, Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        assert!(matches!(stream, ProxyApiStream::Tcp(_)));
+        accept.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_api_ready_rejects_missing_api_endpoint() {
+        let result = ProxyCoreExecution::new(ProxyCoreType::Mihomo)
+            .ensure_api_ready(&ProxyRunningArguments::default(), Duration::from_secs(1))
+            .await;
+
+        assert!(matches!(result, Err(ProxyCoreError::ApiEndpointNotConfigured)));
     }
 }
