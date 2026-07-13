@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage_dir = std::env::temp_dir().join("luhomo-play-config");
     println!("配置存储目录: {}", storage_dir.display());
-    let manager = LocalConfigurationManager::new(storage_dir, reqwest::Client::new());
+    let manager = LocalConfigurationManager::new(storage_dir.clone(), reqwest::Client::new());
     let source = ConfigurationSource::RemoteUrl {
         url: subscription_url.clone(),
         update_strategy: UpdateStrategy {
@@ -50,7 +50,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let controller = read_input_with_default("API 控制器地址 [127.0.0.1:9090]: ", "127.0.0.1:9090")?;
     let args = ProxyRunningArguments::builder().external_controller(controller).build();
-    let mut execution = ProxyCoreExecution::new(ProxyCoreType::Mihomo);
+    let runtime_dir = storage_dir.join("mihomo-runtime");
+    println!("Mihomo 运行目录: {}", runtime_dir.display());
+    let mut execution = ProxyCoreExecution::new(ProxyCoreType::Mihomo).runtime_dir(runtime_dir);
     let api_stream = execution.launch(&item, content, &args).await?;
 
     match &api_stream {

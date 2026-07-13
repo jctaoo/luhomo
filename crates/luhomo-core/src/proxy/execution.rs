@@ -6,6 +6,7 @@ use crate::proxy::status::ProxyCoreStatus;
 use interprocess::local_socket::traits::tokio::Stream as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::process::Stdio;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::process::{Child, Command};
@@ -35,6 +36,9 @@ pub enum ProxyCoreError {
 
     #[error("failed to write runtime config: {0}")]
     ConfigError(#[source] std::io::Error),
+
+    #[error("failed to redirect proxy core output: {0}")]
+    OutputRedirectFailed(#[source] std::io::Error),
 
     #[error("monitor task failed: {0}")]
     MonitorTaskFailed(#[source] tokio::task::JoinError),
@@ -93,6 +97,7 @@ pub enum ProxyApiStream {
 ///
 ///     let mut exec = ProxyCoreExecution::new(ProxyCoreType::Mihomo)
 ///         .executable("/path/to/mihomo")
+///         .runtime_dir("/path/to/runtime/dir")
 ///         .auto_restart(true);
 ///
 ///     let _api_stream = exec.launch(&configuration_item, config, &args).await?;
@@ -119,6 +124,7 @@ pub struct ProxyCoreExecution {
     core_type: ProxyCoreType,
 
     executable: PathBuf,
+    runtime_dir: PathBuf,
     auto_restart: bool,
 
     status_tx: watch::Sender<ProxyCoreStatus>,
@@ -134,9 +140,11 @@ impl ProxyCoreExecution {
     pub fn new(core_type: ProxyCoreType) -> Self {
         let (status_tx, status_rx) = watch::channel(ProxyCoreStatus::Idle);
         let executable = core_type.find_executable();
+        let runtime_dir = std::env::temp_dir().join(core_type.as_ref());
         Self {
             core_type,
             executable,
+            runtime_dir,
             auto_restart: true,
             status_tx,
             status_rx,
@@ -148,6 +156,15 @@ impl ProxyCoreExecution {
     /// 指定 proxy core 可执行文件路径（默认自动查找）
     pub fn executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.executable = path.into();
+        self
+    }
+
+    /// 指定代理核心的运行目录。
+    ///
+    /// 运行时 YAML 文件以及 `logs/{core}.stdout.log`、
+    /// `logs/{core}.stderr.log` 都会写入该目录。
+    pub fn runtime_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.runtime_dir = path.into();
         self
     }
 
@@ -200,7 +217,9 @@ impl ProxyCoreExecution {
             .await?;
 
         // Spawn the child process
-        let mut command = self.create_child_command(&config_path);
+        let mut command = self
+            .create_child_command(&config_path)
+            .map_err(ProxyCoreError::OutputRedirectFailed)?;
         let mut child = command.spawn().map_err(ProxyCoreError::SpawnFailed)?;
 
         let pid = match child.id() {
@@ -451,8 +470,7 @@ impl ProxyCoreExecution {
     }
 
     /// 将传入的配置与运行参数合并，并写入临时 YAML 文件
-    /// 文件写入路径为 `std::env::temp_dir()/{core_type}/{configuration uuid}.yaml`，
-    /// 例如 `<temp>/mihomo/550e8400-e29b-41d4-a716-446655440000.yaml`，并返回该路径。
+    /// 文件写入路径为 `{runtime_dir}/{configuration uuid}.yaml`，并返回该路径。
     async fn merge_and_write_runtime_cfg(
         &self,
         item: &ConfigurationItem,
@@ -465,17 +483,21 @@ impl ProxyCoreExecution {
             .await
             .map_err(ProxyCoreError::ConfigError)?;
 
-        // define target path
-        let mut target_path = std::env::temp_dir();
-
-        // Use the core_type as a subdirectory to avoid conflicts between different core types
-        target_path.push(self.core_type.as_ref());
-        tokio::fs::create_dir_all(&target_path)
+        tokio::fs::create_dir_all(&self.runtime_dir)
             .await
             .map_err(ProxyCoreError::ConfigError)?;
+        let log_dir = self.runtime_dir.join("logs");
+        tokio::fs::create_dir_all(&log_dir)
+            .await
+            .map_err(ProxyCoreError::ConfigError)?;
+        info!(
+            runtime_dir = %self.runtime_dir.display(),
+            log_dir = %log_dir.display(),
+            "prepared proxy core runtime directories"
+        );
 
         // Use the configuration item's UUID as the filename
-        target_path.push(format!("{}.yaml", item.uuid));
+        let target_path = self.runtime_dir.join(format!("{}.yaml", item.uuid));
 
         // Write the merged configuration to the target file (tokio)
         tokio::fs::write(&target_path, build_args)
@@ -485,11 +507,35 @@ impl ProxyCoreExecution {
         Ok(target_path)
     }
 
-    fn create_child_command(&self, config_path: impl AsRef<Path>) -> Command {
+    fn create_child_command(&self, config_path: impl AsRef<Path>) -> std::io::Result<Command> {
         let running_args = self.core_type.build_running_args(&config_path);
+        let log_dir = self.runtime_dir.join("logs");
+
+        let core_name = self.core_type.as_ref();
+        let stdout_log = log_dir.join(format!("{core_name}.stdout.log"));
+        let stderr_log = log_dir.join(format!("{core_name}.stderr.log"));
+        let stdout = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&stdout_log)?;
+        let stderr = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&stderr_log)?;
+        info!(
+            core = core_name,
+            stdout_log = %stdout_log.display(),
+            stderr_log = %stderr_log.display(),
+            "redirecting proxy core output"
+        );
+
         let mut cmd = Command::new(&self.executable);
-        cmd.args(&running_args).kill_on_drop(true);
-        cmd
+        cmd.args(&running_args)
+            .current_dir(&self.runtime_dir)
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .kill_on_drop(true);
+        Ok(cmd)
     }
 
     async fn wait_for_event(child: &mut Child, shutdown_token: &tokio_util::sync::CancellationToken) -> MonitorEvent {
