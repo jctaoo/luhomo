@@ -4,7 +4,6 @@ use crate::proxy::global_args::ProxyRunningArguments;
 use crate::proxy::manifest::ProxyCoreManifest;
 use crate::proxy::status::ProxyCoreStatus;
 use interprocess::local_socket::traits::tokio::Stream as _;
-use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
@@ -88,23 +87,14 @@ pub enum ProxyApiStream {
 ///         .source(ConfigurationSource::local_file().path("config.yaml").call())
 ///         .display_name("example")
 ///         .build();
-///     #[derive(serde::Serialize)]
-///     struct Config(serde_yaml::Value);
-///
-///     impl AsRef<serde_yaml::Value> for Config {
-///         fn as_ref(&self) -> &serde_yaml::Value {
-///             &self.0
-///         }
-///     }
-///
-///     let config = Config(serde_yaml::Value::Mapping(Default::default()));
+///     let config = b"proxies: []\nproxy-groups: []\nrules: []\n";
 ///     let args = ProxyRunningArguments::default();
 ///
 ///     let mut exec = ProxyCoreExecution::new(ProxyCoreType::Mihomo)
 ///         .executable("/path/to/mihomo")
 ///         .auto_restart(true);
 ///
-///     let _api_stream = exec.launch(&configuration_item, &config, &args).await?;
+///     let _api_stream = exec.launch(&configuration_item, config, &args).await?;
 ///
 ///     // 订阅状态变化
 ///     let mut rx = exec.status_watcher();
@@ -175,15 +165,12 @@ impl ProxyCoreExecution {
     /// 若退出并非由 [`ProxyCoreExecution::shutdown`] 触发，则在启用自动重启时尝试重新启动。
     ///
     /// 返回已就绪且已连接的 API 流。
-    pub async fn launch<C>(
+    pub async fn launch(
         &mut self,
         configuration_item: &ConfigurationItem,
-        config: impl AsRef<C>,
+        config: impl AsRef<[u8]>,
         args: &ProxyRunningArguments,
-    ) -> Result<ProxyApiStream, ProxyCoreError>
-    where
-        C: Serialize,
-    {
+    ) -> Result<ProxyApiStream, ProxyCoreError> {
         let running_pid = {
             let status = self.status_rx.borrow();
 
@@ -207,7 +194,7 @@ impl ProxyCoreExecution {
 
         // Write to a target config file
         let config_path = self
-            .merge_and_write_runtime_cfg(configuration_item, &config, args)
+            .merge_and_write_runtime_cfg(configuration_item, config, args)
             .await?;
 
         // Spawn the child process
@@ -459,15 +446,12 @@ impl ProxyCoreExecution {
     /// 将传入的配置与运行参数合并，并写入临时 YAML 文件
     /// 文件写入路径为 `std::env::temp_dir()/{core_type}/{configuration uuid}.yaml`，
     /// 例如 `<temp>/mihomo/550e8400-e29b-41d4-a716-446655440000.yaml`，并返回该路径。
-    async fn merge_and_write_runtime_cfg<C>(
+    async fn merge_and_write_runtime_cfg(
         &self,
         item: &ConfigurationItem,
-        config: impl AsRef<C>,
+        config: impl AsRef<[u8]>,
         args: &ProxyRunningArguments,
-    ) -> Result<PathBuf, ProxyCoreError>
-    where
-        C: Serialize,
-    {
+    ) -> Result<PathBuf, ProxyCoreError> {
         let manifest = self.core_type.get_manifest();
         let build_args = manifest
             .merge_runtime_manifest(config, args)

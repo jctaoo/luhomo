@@ -1,42 +1,78 @@
-use http::HeaderMap;
+//! 使用方式：`cargo run -p luhomo-core --example play`
+//!
+//! 启动前请确保 mihomo 可执行文件可用；可通过 `MIHOMO_PATH` 指定其路径。
+
+use std::io::{self, Write};
+
 use luhomo_core::{
-    config::models::{ConfigurationItem, ConfigurationSource, UpdateStrategy},
-    net::{http::HttpClient, reqwest::ReqwestClient},
+    config::{
+        ConfigurationManager, LocalConfigurationManager,
+        models::{ConfigurationSource, UpdateStrategy},
+    },
+    proxy::{
+        ProxyCoreType,
+        execution::{ProxyApiStream, ProxyCoreExecution},
+        global_args::ProxyRunningArguments,
+    },
 };
-use time::ext::NumericalDuration;
+use url::Url;
 
 #[tokio::main]
-async fn main() {
-    let client = ReqwestClient(reqwest::Client::new());
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let subscription_url = read_input("订阅链接: ")?;
+    let subscription_url = Url::parse(&subscription_url)?;
 
-    let mut headers = HeaderMap::new();
-    headers.insert(http::header::ACCEPT, "application/json".parse().unwrap());
+    let storage_dir = std::env::temp_dir().join("luhomo-play-config");
+    println!("配置存储目录: {}", storage_dir.display());
+    let manager = LocalConfigurationManager::new(storage_dir, reqwest::Client::new());
+    let source = ConfigurationSource::RemoteUrl {
+        url: subscription_url.clone(),
+        update_strategy: UpdateStrategy {
+            auto_update: false,
+            interval: None,
+        },
+        homepage: None,
+        use_proxy: false,
+        // 与 Clash Party 的默认订阅请求 UA 保持一致。
+        user_agent: Some(format!("mihomo.party/v{} (clash.meta)", env!("CARGO_PKG_VERSION"))),
+    };
 
-    match client.get("https://httpbin.org/json", Some(headers)).await {
-        Ok(resp) => println!("GET status: {}, body len: {}", resp.status(), resp.body().len()),
-        Err(e) => println!("GET error: {e:?}"),
+    println!("正在通过 LocalConfigurationManager 下载并缓存订阅配置...");
+    let item = manager.add(source).await?;
+    let content = manager.get_content(&item.uuid).await?;
+    // `content` 就是订阅原始 YAML，直接作为 runtime manifest 的基础配置。
+
+    let controller = read_input_with_default("API 控制器地址 [127.0.0.1:9090]: ", "127.0.0.1:9090")?;
+    let args = ProxyRunningArguments::builder().external_controller(controller).build();
+    let mut execution = ProxyCoreExecution::new(ProxyCoreType::Mihomo);
+    let api_stream = execution.launch(&item, content, &args).await?;
+
+    match &api_stream {
+        ProxyApiStream::Tcp(_) => println!("mihomo 已启动，已连接 TCP API。"),
+        ProxyApiStream::Local(_) => println!("mihomo 已启动，已连接本地 API。"),
     }
 
-    let source = ConfigurationSource::remote_url()
-        .url("https://example.com")
-        .update_strategy(
-            UpdateStrategy::builder()
-                .auto_update(true)
-                .interval(3.hours())
-                .build(),
-        )
-        .use_proxy(true)
-        .call()
-        .expect("invalid URL");
+    println!("按 Enter 停止 mihomo。");
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    execution.shutdown().await?;
+    println!("mihomo 已停止。");
 
-    let item = ConfigurationItem::builder()
-        .display_name("Hello")
-        .source(source)
-        .build();
+    Ok(())
+}
 
-    let json = serde_json::to_string_pretty(&item).unwrap();
-    println!("json: {}", json);
+fn read_input(prompt: &str) -> io::Result<String> {
+    print!("{prompt}");
+    io::stdout().flush()?;
 
-    let item2: ConfigurationItem = serde_json::from_str(&json).unwrap();
-    println!("item2: {:?}", item2);
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_owned())
+}
+
+fn read_input_with_default(prompt: &str, default: &str) -> io::Result<String> {
+    let input = read_input(prompt)?;
+    Ok((!input.is_empty())
+        .then_some(input)
+        .unwrap_or_else(|| default.to_owned()))
 }

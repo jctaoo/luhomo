@@ -15,15 +15,12 @@ impl MihomoCoreManifest {
 }
 
 impl ProxyCoreManifest for MihomoCoreManifest {
-    async fn merge_runtime_manifest<C>(
+    async fn merge_runtime_manifest(
         &self,
-        config: impl AsRef<C>,
+        config: impl AsRef<[u8]>,
         args: &ProxyRunningArguments,
-    ) -> Result<Bytes, Error>
-    where
-        C: Serialize,
-    {
-        let mut config = serde_yaml::to_value(config.as_ref()).map_err(yaml_error)?;
+    ) -> Result<Bytes, Error> {
+        let mut config: Value = serde_yaml::from_slice(config.as_ref()).map_err(yaml_error)?;
         let manifest = config.as_mapping_mut().ok_or_else(|| {
             Error::new(
                 ErrorKind::InvalidData,
@@ -77,22 +74,10 @@ fn yaml_error(error: serde_yaml::Error) -> Error {
 mod tests {
     use super::*;
 
-    struct Config(Value);
-
-    impl AsRef<Value> for Config {
-        fn as_ref(&self) -> &Value {
-            &self.0
-        }
-    }
-
     #[tokio::test]
     async fn merges_runtime_arguments_and_preserves_other_configuration() {
-        let config = Config(
-            serde_yaml::from_str(
-                "mixed-port: 1234\nexternal-controller: 127.0.0.1:9090\nproxies:\n  - name: direct\n    type: direct\n",
-            )
-            .unwrap(),
-        );
+        let config =
+            b"mixed-port: 1234\nexternal-controller: 127.0.0.1:9090\nproxies:\n  - name: direct\n    type: direct\n";
         let args = ProxyRunningArguments::builder()
             .port(7891)
             .allow_lan(true)
@@ -102,7 +87,7 @@ mod tests {
             .build();
 
         let output = MihomoCoreManifest::new()
-            .merge_runtime_manifest(&config, &args)
+            .merge_runtime_manifest(config, &args)
             .await
             .unwrap();
         let output: Value = serde_yaml::from_slice(&output).unwrap();
@@ -120,13 +105,10 @@ mod tests {
 
     #[tokio::test]
     async fn leaves_optional_subscription_settings_when_no_override_is_given() {
-        let config = Config(
-            serde_yaml::from_str("external-controller: 127.0.0.1:9090\nexternal-ui-url: https://example.test/ui.zip\n")
-                .unwrap(),
-        );
+        let config = b"external-controller: 127.0.0.1:9090\nexternal-ui-url: https://example.test/ui.zip\n";
 
         let output = MihomoCoreManifest::new()
-            .merge_runtime_manifest(&config, &ProxyRunningArguments::default())
+            .merge_runtime_manifest(config, &ProxyRunningArguments::default())
             .await
             .unwrap();
         let output: Value = serde_yaml::from_slice(&output).unwrap();
@@ -137,9 +119,8 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_a_non_mapping_configuration_root() {
-        let config = Config(Value::Sequence(vec![Value::String("not a mapping".to_owned())]));
         let error = MihomoCoreManifest::new()
-            .merge_runtime_manifest(&config, &ProxyRunningArguments::default())
+            .merge_runtime_manifest(b"- not a mapping\n", &ProxyRunningArguments::default())
             .await
             .unwrap_err();
 

@@ -1,7 +1,7 @@
-use url::Url;
-use bon::{bon, Builder};
+use bon::{Builder, bon};
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DurationSeconds};
+use serde_with::{DurationSeconds, serde_as};
+use url::Url;
 
 /// 配置更新策略
 #[serde_as]
@@ -29,6 +29,9 @@ pub enum ConfigurationSource {
         homepage: Option<Url>,
         /// 是否通过代理拉取
         use_proxy: bool,
+        /// 更新订阅时使用的 HTTP User-Agent。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_agent: Option<String>,
     },
 }
 
@@ -47,6 +50,7 @@ impl ConfigurationSource {
         update_strategy: UpdateStrategy,
         #[builder(into)] homepage: Option<String>,
         use_proxy: bool,
+        #[builder(into)] user_agent: Option<String>,
     ) -> Result<Self, url::ParseError> {
         let url = Url::parse(&url)?;
         let homepage = homepage.as_deref().map(Url::parse).transpose()?;
@@ -55,6 +59,7 @@ impl ConfigurationSource {
             update_strategy,
             homepage,
             use_proxy,
+            user_agent,
         })
     }
 }

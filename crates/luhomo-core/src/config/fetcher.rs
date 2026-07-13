@@ -1,4 +1,8 @@
 use bytes::Bytes;
+use http::{
+    HeaderMap,
+    header::{HeaderValue, USER_AGENT},
+};
 use thiserror::Error;
 
 use crate::config::models::{self, ConfigurationSource};
@@ -14,6 +18,8 @@ pub enum ConfigurationFetcherError {
     Json(#[from] serde_json::Error),
     #[error("bad response: status {0}")]
     BadResponse(http::StatusCode),
+    #[error("invalid user-agent header: {0}")]
+    InvalidUserAgent(#[source] http::header::InvalidHeaderValue),
 }
 
 pub trait ConfigurationFetcher {
@@ -31,10 +37,11 @@ pub trait ConfigurationFetcher {
                 let content = tokio::fs::read(path).await?;
                 Ok(Bytes::from(content))
             }
-            ConfigurationSource::RemoteUrl { url, .. } => {
+            ConfigurationSource::RemoteUrl { url, user_agent, .. } => {
                 let client = self.get_client();
+                let headers = user_agent_headers(user_agent)?;
                 let resp = client
-                    .get(url.as_str(), None)
+                    .get(url.as_str(), headers)
                     .await
                     .map_err(|e| ConfigurationFetcherError::Http(format!("{e:?}")))?;
 
@@ -47,6 +54,17 @@ pub trait ConfigurationFetcher {
             }
         }
     }
+}
+
+fn user_agent_headers(user_agent: &Option<String>) -> Result<Option<HeaderMap>, ConfigurationFetcherError> {
+    let Some(user_agent) = user_agent else {
+        return Ok(None);
+    };
+
+    let value = HeaderValue::from_str(user_agent).map_err(ConfigurationFetcherError::InvalidUserAgent)?;
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, value);
+    Ok(Some(headers))
 }
 
 #[cfg(feature = "reqwest")]

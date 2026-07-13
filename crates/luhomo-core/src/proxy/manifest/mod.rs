@@ -2,16 +2,13 @@
 pub mod mihomo;
 
 use bytes::Bytes;
-use serde::Serialize;
 
 use crate::proxy::global_args::ProxyRunningArguments;
 
 pub trait ProxyCoreManifest {
-    async fn merge_runtime_manifest<C>(
+    async fn merge_runtime_manifest(
         &self,
-        config: impl AsRef<C>,
+        config: impl AsRef<[u8]>,
         args: &ProxyRunningArguments,
-    ) -> Result<Bytes, std::io::Error>
-    where
-        C: Serialize;
+    ) -> Result<Bytes, std::io::Error>;
 }
