@@ -4,6 +4,7 @@ use http::{
     header::{HeaderValue, USER_AGENT},
 };
 use thiserror::Error;
+use tracing::{debug, info};
 
 use crate::config::models::{self, ConfigurationSource};
 use crate::net::http::HttpClient;
@@ -34,12 +35,20 @@ pub trait ConfigurationFetcher {
     ) -> Result<Bytes, ConfigurationFetcherError> {
         match source {
             ConfigurationSource::LocalFile(path) => {
+                debug!(path, "reading local configuration");
                 let content = tokio::fs::read(path).await?;
+                info!(path, bytes = content.len(), "read local configuration");
                 Ok(Bytes::from(content))
             }
             ConfigurationSource::RemoteUrl { url, user_agent, .. } => {
                 let client = self.get_client();
                 let headers = user_agent_headers(user_agent)?;
+                info!(
+                    scheme = url.scheme(),
+                    host = url.host_str(),
+                    has_custom_user_agent = user_agent.is_some(),
+                    "fetching remote configuration"
+                );
                 let resp = client
                     .get(url.as_str(), headers)
                     .await
@@ -50,7 +59,9 @@ pub trait ConfigurationFetcher {
                     return Err(ConfigurationFetcherError::BadResponse(status));
                 }
 
-                Ok(resp.into_body())
+                let body = resp.into_body();
+                info!(status = %status, bytes = body.len(), "fetched remote configuration");
+                Ok(body)
             }
         }
     }

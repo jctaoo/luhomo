@@ -15,10 +15,16 @@ use luhomo_core::{
         global_args::ProxyRunningArguments,
     },
 };
+use tracing_subscriber::EnvFilter;
 use url::Url;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("luhomo_core=trace")))
+        .with_target(false)
+        .init();
+
     let subscription_url = read_input("订阅链接: ")?;
     let subscription_url = Url::parse(&subscription_url)?;
 

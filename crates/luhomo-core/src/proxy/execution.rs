@@ -10,6 +10,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
+use tracing::{info, warn};
 
 /// 代理核心错误
 #[derive(Error, Debug)]
@@ -183,6 +184,7 @@ impl ProxyCoreExecution {
         if let Some(pid) = running_pid {
             return Err(ProxyCoreError::AlreadyRunning(pid));
         }
+        info!(core = self.core_type.as_ref(), "starting proxy core");
         if !tokio::fs::try_exists(&self.executable)
             .await
             .map_err(ProxyCoreError::ConfigError)?
@@ -213,6 +215,7 @@ impl ProxyCoreExecution {
                 return Err(ProxyCoreError::UnknownPID);
             }
         };
+        info!(pid, "proxy core process spawned");
 
         let api_stream = tokio::select! {
             biased;
@@ -225,6 +228,7 @@ impl ProxyCoreExecution {
         let api_stream = match api_stream {
             Ok(stream) => stream,
             Err(error) => {
+                warn!(?error, "proxy core API did not become ready");
                 let _ = child.start_kill();
                 let _ = child.wait().await;
 
@@ -333,6 +337,7 @@ impl ProxyCoreExecution {
 
         self.monitor_handle = Some(handle);
         self.status_tx.send_replace(ProxyCoreStatus::Running { pid });
+        info!(pid, "proxy core API is ready");
 
         Ok(api_stream)
     }
@@ -362,6 +367,7 @@ impl ProxyCoreExecution {
 
         // 通知监控任务关闭
         if let Some(ref tx) = self.shutdown_token {
+            info!("shutting down proxy core");
             tx.cancel();
         }
 
@@ -371,6 +377,7 @@ impl ProxyCoreExecution {
         }
 
         self.shutdown_token = None;
+        info!("proxy core stopped");
 
         Ok(())
     }

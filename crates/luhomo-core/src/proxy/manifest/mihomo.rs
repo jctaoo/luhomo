@@ -5,6 +5,7 @@ use crate::proxy::manifest::ProxyCoreManifest;
 use bytes::Bytes;
 use serde::Serialize;
 use serde_yaml::{Mapping, Value};
+use tracing::debug;
 
 pub struct MihomoCoreManifest {}
 
@@ -20,6 +21,7 @@ impl ProxyCoreManifest for MihomoCoreManifest {
         config: impl AsRef<[u8]>,
         args: &ProxyRunningArguments,
     ) -> Result<Bytes, Error> {
+        debug!(input_bytes = config.as_ref().len(), "merging mihomo runtime manifest");
         let mut config: Value = serde_yaml::from_slice(config.as_ref()).map_err(yaml_error)?;
         let manifest = config.as_mapping_mut().ok_or_else(|| {
             Error::new(
@@ -56,7 +58,9 @@ impl ProxyCoreManifest for MihomoCoreManifest {
             insert(manifest, "external-ui-url", value)?;
         }
 
-        serde_yaml::to_string(&config).map(Bytes::from).map_err(yaml_error)
+        let manifest = serde_yaml::to_string(&config).map(Bytes::from).map_err(yaml_error)?;
+        debug!(output_bytes = manifest.len(), "merged mihomo runtime manifest");
+        Ok(manifest)
     }
 }
 

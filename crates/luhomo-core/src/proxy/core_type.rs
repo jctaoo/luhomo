@@ -1,5 +1,6 @@
-use std::path::{Path, PathBuf};
 use crate::proxy::manifest::ProxyCoreManifest;
+use std::path::{Path, PathBuf};
+use tracing::{debug, trace};
 
 /// This enum represents the different types of proxy cores that can be used in the application.
 pub enum ProxyCoreType {
@@ -30,10 +31,7 @@ impl ProxyCoreType {
 
     pub fn build_running_args(&self, target_cfg_file: impl AsRef<Path>) -> Vec<String> {
         match self {
-            ProxyCoreType::Mihomo => vec![
-                "-f".to_string(),
-                target_cfg_file.as_ref().to_string_lossy().to_string(),
-            ],
+            ProxyCoreType::Mihomo => vec!["-f".to_string(), target_cfg_file.as_ref().to_string_lossy().to_string()],
         }
     }
 }
@@ -53,7 +51,9 @@ fn find_mihomo_executable() -> PathBuf {
 
     if let Ok(path) = std::env::var("MIHOMO_PATH") {
         let p = PathBuf::from(path);
+        trace!(path = %p.display(), source = "MIHOMO_PATH", "checking mihomo executable");
         if p.exists() {
+            debug!(path = %p.display(), source = "MIHOMO_PATH", "found mihomo executable");
             return p;
         }
     }
@@ -62,23 +62,34 @@ fn find_mihomo_executable() -> PathBuf {
         && let Some(dir) = current_exe.parent()
     {
         let p = dir.join(executable_name);
+        trace!(path = %p.display(), source = "current executable directory", "checking mihomo executable");
         if p.exists() {
+            debug!(path = %p.display(), source = "current executable directory", "found mihomo executable");
             return p;
         }
     }
 
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        let root = PathBuf::from(&manifest)
-            .parent()
-            .unwrap_or(Path::new("."))
-            .to_path_buf();
-        for profile in &["debug", "release"] {
-            let p = root.join("target").join(profile).join(executable_name);
-            if p.exists() {
-                return p;
+        let manifest_dir = PathBuf::from(manifest);
+        if let Some(root) = find_cargo_workspace_root(&manifest_dir) {
+            for profile in &["debug", "release"] {
+                let p = root.join("target").join(profile).join(executable_name);
+                trace!(path = %p.display(), source = "Cargo target directory", "checking mihomo executable");
+                if p.exists() {
+                    debug!(path = %p.display(), source = "Cargo target directory", "found mihomo executable");
+                    return p;
+                }
             }
         }
     }
 
-    PathBuf::from(executable_name)
+    let fallback = PathBuf::from(executable_name);
+    debug!(path = %fallback.display(), source = "PATH", "using mihomo executable fallback");
+    fallback
+}
+
+fn find_cargo_workspace_root(manifest_dir: &Path) -> Option<&Path> {
+    manifest_dir.ancestors().find(|directory| {
+        std::fs::read_to_string(directory.join("Cargo.toml")).is_ok_and(|cargo_toml| cargo_toml.contains("[workspace]"))
+    })
 }
