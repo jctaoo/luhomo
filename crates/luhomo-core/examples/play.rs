@@ -8,11 +8,8 @@ use luhomo_core::{
     config::{
         ConfigurationManager, LocalConfigurationManager,
         models::{ConfigurationItem, ConfigurationSource, UpdateStrategy},
-    },
-    proxy::{
-        ProxyCoreType,
-        execution::{ProxyApiStream, ProxyCoreExecution},
-        global_args::ProxyRunningArguments,
+    }, proxy::{
+        core_type::ProxyCoreType, execution::ProxyCoreExecution, global_args::ProxyRunningArguments, launch_status::ProxyApiStream,
     },
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -42,7 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = ProxyRunningArguments::builder().external_controller(controller).build();
     let runtime_dir = storage_dir.join("mihomo-runtime");
     println!("Mihomo 运行目录: {}", runtime_dir.display());
-    let mut execution = ProxyCoreExecution::new(ProxyCoreType::Mihomo).runtime_dir(runtime_dir);
+    let mut execution = ProxyCoreExecution::builder()
+        .core_type(ProxyCoreType::Mihomo)
+        .runtime_dir(runtime_dir)
+        .build();
     let api_stream = execution.launch(&item, content, &args).await?;
 
     match &api_stream {

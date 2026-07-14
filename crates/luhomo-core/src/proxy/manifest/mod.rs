@@ -2,13 +2,14 @@
 pub mod mihomo;
 
 use bytes::Bytes;
+use std::future::Future;
 
 use crate::proxy::global_args::ProxyRunningArguments;
 
 pub trait ProxyCoreManifest {
-    async fn merge_runtime_manifest(
+    fn merge_runtime_manifest(
         &self,
-        config: impl AsRef<[u8]>,
+        config: impl AsRef<[u8]> + Send,
         args: &ProxyRunningArguments,
-    ) -> Result<Bytes, std::io::Error>;
+    ) -> impl Future<Output = Result<Bytes, std::io::Error>> + Send;
 }

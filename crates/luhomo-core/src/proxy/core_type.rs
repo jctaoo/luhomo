@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, trace};
 
 /// This enum represents the different types of proxy cores that can be used in the application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProxyCoreType {
     /// https://wiki.metacubex.one/
     Mihomo,

@@ -5,7 +5,7 @@ use crate::proxy::manifest::ProxyCoreManifest;
 use bytes::Bytes;
 use serde::Serialize;
 use serde_yaml::{Mapping, Value};
-use tracing::debug;
+use tracing::{debug, info};
 
 pub struct MihomoCoreManifest {}
 
@@ -16,57 +16,59 @@ impl MihomoCoreManifest {
 }
 
 impl ProxyCoreManifest for MihomoCoreManifest {
-    async fn merge_runtime_manifest(
+    fn merge_runtime_manifest(
         &self,
-        config: impl AsRef<[u8]>,
+        config: impl AsRef<[u8]> + Send,
         args: &ProxyRunningArguments,
-    ) -> Result<Bytes, Error> {
-        debug!(input_bytes = config.as_ref().len(), "merging mihomo runtime manifest");
-        let mut config: Value = serde_yaml::from_slice(config.as_ref()).map_err(yaml_error)?;
-        let manifest = config.as_mapping_mut().ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidData,
-                "mihomo configuration root must be a YAML mapping",
-            )
-        })?;
+    ) -> impl std::future::Future<Output = Result<Bytes, Error>> + Send {
+        async move {
+            debug!(input_bytes = config.as_ref().len(), "merging mihomo runtime manifest");
+            let mut config: Value = serde_yaml::from_slice(config.as_ref()).map_err(yaml_error)?;
+            let manifest = config.as_mapping_mut().ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    "mihomo configuration root must be a YAML mapping",
+                )
+            })?;
 
-        // These are process-level settings, so they deliberately take precedence
-        // over equally named values supplied by a subscription configuration.
-        replace_or_insert(manifest, "mixed-port", args.port)?;
-        replace_or_insert(manifest, "allow-lan", args.allow_lan)?;
-        replace_or_insert(manifest, "bind-address", &args.bind_address)?;
-        replace_or_insert(manifest, "mode", &args.mode)?;
-        replace_or_insert(manifest, "log-level", &args.log_level)?;
-        replace_or_insert(manifest, "ipv6", args.ipv6)?;
+            // These are process-level settings, so they deliberately take precedence
+            // over equally named values supplied by a subscription configuration.
+            replace_or_insert(manifest, "mixed-port", args.port)?;
+            replace_or_insert(manifest, "allow-lan", args.allow_lan)?;
+            replace_or_insert(manifest, "bind-address", &args.bind_address)?;
+            replace_or_insert(manifest, "mode", &args.mode)?;
+            replace_or_insert(manifest, "log-level", &args.log_level)?;
+            replace_or_insert(manifest, "ipv6", args.ipv6)?;
 
-        // TUN is an application-level runtime capability. Override the fields
-        // required for the desktop TUN mode, while preserving any additional
-        // TUN options supplied by the subscription.
-        inject_tun(manifest)?;
-        inject_profile(manifest)?;
+            // TUN is an application-level runtime capability. Override the fields
+            // required for the desktop TUN mode, while preserving any additional
+            // TUN options supplied by the subscription.
+            inject_tun(manifest)?;
+            inject_profile(manifest)?;
 
-        // An omitted optional runtime argument leaves the subscription's setting
-        // intact. This permits subscriptions to provide an API/UI configuration
-        // unless the caller explicitly overrides it.
-        if let Some(value) = &args.external_controller {
-            replace_or_insert(manifest, "external-controller", value)?;
-        }
-        if let Some(value) = &args.external_controller_unix {
-            replace_or_insert(manifest, "external-controller-unix", value)?;
-        }
-        if let Some(value) = &args.external_controller_pipe {
-            replace_or_insert(manifest, "external-controller-pipe", value)?;
-        }
-        if let Some(value) = &args.external_ui_name {
-            replace_or_insert(manifest, "external-ui-name", value)?;
-        }
-        if let Some(value) = &args.external_ui_url {
-            replace_or_insert(manifest, "external-ui-url", value)?;
-        }
+            // An omitted optional runtime argument leaves the subscription's setting
+            // intact. This permits subscriptions to provide an API/UI configuration
+            // unless the caller explicitly overrides it.
+            if let Some(value) = &args.external_controller {
+                replace_or_insert(manifest, "external-controller", value)?;
+            }
+            if let Some(value) = &args.external_controller_unix {
+                replace_or_insert(manifest, "external-controller-unix", value)?;
+            }
+            if let Some(value) = &args.external_controller_pipe {
+                replace_or_insert(manifest, "external-controller-pipe", value)?;
+            }
+            if let Some(value) = &args.external_ui_name {
+                replace_or_insert(manifest, "external-ui-name", value)?;
+            }
+            if let Some(value) = &args.external_ui_url {
+                replace_or_insert(manifest, "external-ui-url", value)?;
+            }
 
-        let manifest = serde_yaml::to_string(&config).map(Bytes::from).map_err(yaml_error)?;
-        debug!(output_bytes = manifest.len(), "merged mihomo runtime manifest");
-        Ok(manifest)
+            let manifest = serde_yaml::to_string(&config).map(Bytes::from).map_err(yaml_error)?;
+            info!(output_bytes = manifest.len(), "merged runtime manifest");
+            Ok(manifest)
+        }
     }
 }
 
