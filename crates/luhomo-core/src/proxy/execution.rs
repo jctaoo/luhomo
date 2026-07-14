@@ -20,36 +20,13 @@ enum MonitorEvent {
 
 /// 代理核心进程管理器。
 ///
-/// 负责 proxy 内核的启动、监控、自动重启和关闭。启动配置会在构造时固化为
+/// 负责 proxy（比如 mihomo）内核的启动、监控、自动重启和关闭。启动配置会在构造时固化为
 /// [`LaunchState`]，后台监控任务只共享该状态，不持有本对象本身。
 /// 在决定不使用 proxy 内核进程时，请显式调用 [`ProxyCoreExecution::shutdown`]；
 /// `Drop` 只会发送取消信号，无法等待子进程已退出。
 ///
 /// TODO: try Windows Job Object and Linux prctl(PR_SET_PDEATHSIG, SIGKILL)
 ///
-/// # 使用示例
-///
-/// ```no_run
-/// use luhomo_core::config::models::{ConfigurationItem, ConfigurationSource};
-/// use luhomo_core::proxy::execution::ProxyCoreExecution;
-/// use luhomo_core::proxy::global_args::ProxyRunningArguments;
-/// use luhomo_core::proxy::core_type::ProxyCoreType;
-///
-/// # #[tokio::main(flavor = "current_thread")]
-/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let item = ConfigurationItem::builder()
-///     .source(ConfigurationSource::local_file().path("config.yaml").call())
-///     .display_name("example")
-///     .build();
-/// let mut exec = ProxyCoreExecution::builder()
-///     .core_type(ProxyCoreType::Mihomo)
-///     .runtime_dir("/path/to/runtime")
-///     .build();
-/// let _api = exec.launch(&item, b"proxies: []\n", &ProxyRunningArguments::default()).await?;
-/// exec.shutdown().await?;
-/// # Ok(())
-/// # }
-/// ```
 pub struct ProxyCoreExecution {
     launch_state: Arc<LaunchState>,
     auto_restart: bool,
@@ -62,9 +39,16 @@ impl ProxyCoreExecution {
     /// 创建新的执行实例，并按内核类型查找 proxy core 可执行文件。
     #[builder]
     pub fn new(
+        /// 要启动的 proxy core 类型。
         core_type: ProxyCoreType,
+        /// 指定 proxy core 可执行文件路径；默认按内核类型自动查找。
         #[builder(into)] executable: Option<PathBuf>,
+        /// 指定代理核心的运行目录。
+        ///
+        /// 运行时 YAML 文件以及 `logs/{core}.stdout.log`、
+        /// `logs/{core}.stderr.log` 都会写入该目录。
         #[builder(into)] runtime_dir: Option<PathBuf>,
+        /// 是否在进程崩溃后自动重启，默认启用。
         #[builder(default = true)] auto_restart: bool,
     ) -> Self {
         let (status_tx, status_rx) = watch::channel(ProxyCoreStatus::Stopped);
@@ -86,7 +70,13 @@ impl ProxyCoreExecution {
 }
 
 impl ProxyCoreExecution {
-    /// 启动 proxy core 内核并开始后台监控。
+    /// 启动 proxy core 内核。
+    ///
+    /// 将代理配置与 [`ProxyRunningArguments`] 合并后写入运行时 YAML 文件，
+    /// 然后启动一个后台监控任务。监控任务利用 [`Child::wait`] 等待进程退出；
+    /// 若退出并非由 [`ProxyCoreExecution::shutdown`] 触发，则在启用自动重启时尝试重新启动。
+    ///
+    /// 返回已就绪且已连接的 API 流。
     pub async fn launch(
         &mut self,
         configuration_item: &ConfigurationItem,
@@ -119,9 +109,11 @@ impl ProxyCoreExecution {
 
         info!(pid, generation, "starting proxy core monitor task");
         let handle = tokio::spawn(async move {
+            let mut current_pid = pid;
             loop {
                 match Self::wait_for_event(&mut child, &shutdown_token).await {
                     MonitorEvent::ShutdownRequested => {
+                        debug!(pid = current_pid, "proxy core monitor received shutdown request");
                         let _ = child.start_kill();
                         let _ = child.wait().await;
                         status_tx.send_replace(ProxyCoreStatus::Stopped);
@@ -133,10 +125,13 @@ impl ProxyCoreExecution {
                                 status_tx.send_replace(ProxyCoreStatus::Stopped);
                                 break;
                             }
+                            let exit_code = exit_status.code();
+                            warn!(pid = current_pid, ?exit_code, "proxy core process exited unexpectedly");
                             status_tx.send_replace(ProxyCoreStatus::Crashed {
-                                exit_code: exit_status.code(),
+                                exit_code,
                             });
                             if !auto_restart {
+                                info!(pid = current_pid, "proxy core auto restart is disabled");
                                 break;
                             }
                             let shutdown_requested = tokio::select! {
@@ -148,6 +143,11 @@ impl ProxyCoreExecution {
                                 status_tx.send_replace(ProxyCoreStatus::Stopped);
                                 break;
                             }
+                            info!(
+                                pid = current_pid,
+                                next_attempt = context.current_attempts.saturating_add(1),
+                                "restarting proxy core after unexpected exit"
+                            );
                             match launch_state.launch_once(&mut context, Some(config.clone())).await {
                                 Ok(LaunchingInstance {
                                     child: new_child,
@@ -156,8 +156,9 @@ impl ProxyCoreExecution {
                                     generation,
                                 }) => {
                                     child = new_child;
+                                    current_pid = pid;
                                     status_tx.send_replace(ProxyCoreStatus::Running { pid, generation });
-                                    info!(pid, generation, "proxy core restarted and API is ready");
+                                    info!(pid, generation, "proxy core restart completed");
                                 }
                                 Err(error) => {
                                     if shutdown_token.is_cancelled() {
@@ -172,10 +173,11 @@ impl ProxyCoreExecution {
                                 }
                             }
                         }
-                        Err(_) => {
+                        Err(error) => {
                             status_tx.send_replace(if shutdown_token.is_cancelled() {
                                 ProxyCoreStatus::Stopped
                             } else {
+                                warn!(pid = current_pid, ?error, "failed to wait for proxy core process");
                                 ProxyCoreStatus::Crashed { exit_code: None }
                             });
                             break;
@@ -189,19 +191,24 @@ impl ProxyCoreExecution {
             .status_tx
             .send_replace(ProxyCoreStatus::Running { pid, generation });
         self.monitor_handle = Some(handle);
-        info!(pid, generation, "proxy core API is ready");
         Ok(api_stream)
     }
 
+    /// 获取当前运行状态。
     pub fn status(&self) -> ProxyCoreStatus {
         self.launch_state.status_rx.borrow().clone()
     }
 
+    /// 获取状态变更的监听器。
+    ///
+    /// 每次状态变化时返回，调用方可以轮询或使用 `changed()` 异步等待。
     pub fn status_watcher(&self) -> watch::Receiver<ProxyCoreStatus> {
         self.launch_state.status_rx.clone()
     }
 
-    /// 发送关闭信号并等待监控任务清理子进程。
+    /// 关闭代理核心。
+    ///
+    /// 发送关闭信号给监控任务，由监控任务 kill 进程并清理。
     pub async fn shutdown(&mut self) -> Result<(), ProxyCoreError> {
         match *self.launch_state.status_rx.borrow() {
             ProxyCoreStatus::Stopping { .. } | ProxyCoreStatus::Stopped => return Err(ProxyCoreError::NotRunning),
@@ -234,6 +241,7 @@ impl ProxyCoreExecution {
 
 impl Drop for ProxyCoreExecution {
     fn drop(&mut self) {
+        // 若监控任务仍在运行，通知它关闭；Drop 无法异步等待清理完成。
         if let Some(token) = &self.shutdown_token {
             token.cancel();
         }
