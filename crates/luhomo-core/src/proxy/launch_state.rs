@@ -225,6 +225,8 @@ impl LaunchState {
         args: &ProxyRunningArguments,
         target_path: impl AsRef<Path>,
     ) -> Result<(), ProxyCoreError> {
+        info!(target_path = %target_path.as_ref().display(), "merging runtime configuration and writing to file");
+
         let build_args = self
             .core_type
             .get_manifest()

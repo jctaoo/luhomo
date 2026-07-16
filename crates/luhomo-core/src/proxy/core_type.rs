@@ -1,6 +1,6 @@
 use crate::proxy::manifest::ProxyCoreManifest;
 use std::path::{Path, PathBuf};
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 /// This enum represents the different types of proxy cores that can be used in the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -66,7 +66,7 @@ fn find_mihomo_executable() -> PathBuf {
         let p = PathBuf::from(path);
         trace!(path = %p.display(), source = "MIHOMO_PATH", "checking mihomo executable");
         if p.exists() {
-            debug!(path = %p.display(), source = "MIHOMO_PATH", "found mihomo executable");
+            info!(path = %p.display(), source = "MIHOMO_PATH", "found mihomo executable");
             return p;
         }
     }
@@ -77,7 +77,7 @@ fn find_mihomo_executable() -> PathBuf {
         let p = dir.join(executable_name);
         trace!(path = %p.display(), source = "current executable directory", "checking mihomo executable");
         if p.exists() {
-            debug!(path = %p.display(), source = "current executable directory", "found mihomo executable");
+            info!(path = %p.display(), source = "current executable directory", "found mihomo executable");
             return p;
         }
     }
@@ -89,7 +89,7 @@ fn find_mihomo_executable() -> PathBuf {
                 let p = root.join("target").join(profile).join(executable_name);
                 trace!(path = %p.display(), source = "Cargo target directory", "checking mihomo executable");
                 if p.exists() {
-                    debug!(path = %p.display(), source = "Cargo target directory", "found mihomo executable");
+                    info!(path = %p.display(), source = "Cargo target directory", "found mihomo executable");
                     return p;
                 }
             }
@@ -97,7 +97,7 @@ fn find_mihomo_executable() -> PathBuf {
     }
 
     let fallback = PathBuf::from(executable_name);
-    debug!(path = %fallback.display(), source = "PATH", "using mihomo executable fallback");
+    info!(path = %fallback.display(), source = "PATH", "using mihomo executable fallback");
     fallback
 }
 
