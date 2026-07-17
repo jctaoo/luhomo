@@ -101,6 +101,49 @@ async fn restarts_after_a_crash_and_increments_the_generation() {
 }
 
 #[tokio::test]
+async fn reuses_the_runtime_yaml_when_its_hash_matches_during_restart() {
+    // 首次启动会写入运行时 YAML；`crash-once` 触发自动重启后，第二次 launch_once
+    // 应验证该文件哈希匹配并复用它，而不是再次合并、写入同一路径。
+    let _guard = PROCESS_TEST_LOCK.lock().await;
+    let runtime = TestRuntime::new();
+    let address = unused_tcp_address();
+    let configuration = configuration();
+    let runtime_yaml = runtime.path().join(format!("{}.yaml", configuration.uuid));
+    let mut execution = execution(&runtime, true);
+    let mut statuses = execution.status_watcher();
+
+    execution
+        .launch(
+            &configuration,
+            b"test-mode: crash-once\n",
+            &running_arguments(&address),
+        )
+        .await
+        .unwrap();
+    let first_write_time = std::fs::metadata(&runtime_yaml)
+        .expect("first launch should write runtime YAML")
+        .modified()
+        .expect("runtime YAML should expose a modification time");
+
+    wait_for_status(&mut statuses, |status| {
+        matches!(status, ProxyCoreStatus::Running { generation: 2, .. })
+    })
+    .await;
+
+    let restart_write_time = std::fs::metadata(&runtime_yaml)
+        .expect("restart should retain runtime YAML")
+        .modified()
+        .expect("runtime YAML should expose a modification time");
+    assert_eq!(
+        restart_write_time, first_write_time,
+        "a matching runtime YAML hash must skip rewriting the file"
+    );
+
+    execution.shutdown().await.unwrap();
+    assert_recorded_processes_are_exited(&runtime).await;
+}
+
+#[tokio::test]
 async fn reports_a_process_that_exits_before_its_api_is_ready() {
     // `exit-before-ready` 在绑定 API 端口前退出。
     // launch 应立即失败，而不是建立监控任务或把进程误判为正常运行。
