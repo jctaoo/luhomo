@@ -46,24 +46,22 @@ impl ProxyCoreManifest for MihomoCoreManifest {
             inject_tun(manifest)?;
             inject_profile(manifest)?;
 
-            // An omitted optional runtime argument leaves the subscription's setting
-            // intact. This permits subscriptions to provide an API/UI configuration
-            // unless the caller explicitly overrides it.
-            if let Some(value) = &args.external_controller {
-                replace_or_insert(manifest, "external-controller", value)?;
-            }
-            if let Some(value) = &args.external_controller_unix {
-                replace_or_insert(manifest, "external-controller-unix", value)?;
-            }
-            if let Some(value) = &args.external_controller_pipe {
-                replace_or_insert(manifest, "external-controller-pipe", value)?;
-            }
-            if let Some(value) = &args.external_ui_name {
-                replace_or_insert(manifest, "external-ui-name", value)?;
-            }
-            if let Some(value) = &args.external_ui_url {
-                replace_or_insert(manifest, "external-ui-url", value)?;
-            }
+            // Runtime arguments are the source of truth for settings exposed by
+            // ProxyRunningArguments. Removing a key for None prevents an endpoint
+            // or UI setting from leaking in from the subscription configuration.
+            replace_or_remove_optional(manifest, "external-controller", args.external_controller.as_ref())?;
+            replace_or_remove_optional(
+                manifest,
+                "external-controller-unix",
+                args.external_controller_unix.as_ref(),
+            )?;
+            replace_or_remove_optional(
+                manifest,
+                "external-controller-pipe",
+                args.external_controller_pipe.as_ref(),
+            )?;
+            replace_or_remove_optional(manifest, "external-ui-name", args.external_ui_name.as_ref())?;
+            replace_or_remove_optional(manifest, "external-ui-url", args.external_ui_url.as_ref())?;
 
             let manifest = serde_yaml::to_string(&config).map(Bytes::from).map_err(yaml_error)?;
             info!(output_bytes = manifest.len(), "merged runtime manifest");
@@ -80,6 +78,20 @@ fn replace_or_insert<T: Serialize>(
     let value = serde_yaml::to_value(value).map_err(yaml_error)?;
     manifest.insert(Value::String(key.to_owned()), value);
     Ok(())
+}
+
+fn replace_or_remove_optional<T: Serialize>(
+    manifest: &mut Mapping,
+    key: &str,
+    value: Option<T>,
+) -> Result<(), Error> {
+    match value {
+        Some(value) => replace_or_insert(manifest, key, value),
+        None => {
+            manifest.remove(Value::String(key.to_owned()));
+            Ok(())
+        }
+    }
 }
 
 fn inject_tun(manifest: &mut Mapping) -> Result<(), Error> {
@@ -166,8 +178,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn leaves_optional_subscription_settings_when_no_override_is_given() {
-        let config = b"external-controller: 127.0.0.1:9090\nexternal-ui-url: https://example.test/ui.zip\n";
+    async fn removes_optional_subscription_settings_when_arguments_are_omitted() {
+        let config = br#"
+external-controller: 127.0.0.1:9090
+external-controller-unix: /tmp/mihomo.sock
+external-controller-pipe: mihomo-pipe
+external-ui-name: dashboard
+external-ui-url: https://example.test/ui.zip
+"#;
 
         let output = MihomoCoreManifest::new()
             .merge_runtime_manifest(config, &ProxyRunningArguments::default())
@@ -175,8 +193,16 @@ mod tests {
             .unwrap();
         let output: Value = serde_yaml::from_slice(&output).unwrap();
 
-        assert_eq!(output["external-controller"], "127.0.0.1:9090");
-        assert_eq!(output["external-ui-url"], "https://example.test/ui.zip");
+        let output = output.as_mapping().unwrap();
+        for key in [
+            "external-controller",
+            "external-controller-unix",
+            "external-controller-pipe",
+            "external-ui-name",
+            "external-ui-url",
+        ] {
+            assert!(!output.contains_key(Value::String(key.to_owned())));
+        }
     }
 
     #[tokio::test]
