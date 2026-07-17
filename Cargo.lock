@@ -3647,6 +3647,7 @@ dependencies = [
  "serde_with",
  "serde_yaml",
  "sha2",
+ "sysinfo",
  "thiserror 2.0.18",
  "time",
  "tokio",

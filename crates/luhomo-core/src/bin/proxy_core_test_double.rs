@@ -68,9 +68,9 @@ fn first_run(runtime_dir: &Path) -> bool {
         .is_ok()
 }
 
-/// 记录一次测试核心进程启动，供集成测试确认自动重启是否实际执行了 spawn。
+/// 记录一次测试核心进程启动及其 PID，供集成测试确认重启次数和进程清理结果。
 fn record_launch(runtime_dir: &Path) {
-    let path = runtime_dir.join("proxy-core-test-double.launch-count");
+    let path = runtime_dir.join("proxy-core-test-double.launches");
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -79,8 +79,12 @@ fn record_launch(runtime_dir: &Path) {
             eprintln!("failed to open {}: {error}", path.display());
             std::process::exit(2);
         });
-    file.write_all(b"started\n").unwrap_or_else(|error| {
+    writeln!(file, "pid={}", std::process::id()).unwrap_or_else(|error| {
         eprintln!("failed to write {}: {error}", path.display());
+        std::process::exit(2);
+    });
+    file.flush().unwrap_or_else(|error| {
+        eprintln!("failed to flush {}: {error}", path.display());
         std::process::exit(2);
     });
 }

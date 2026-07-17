@@ -1,115 +1,10 @@
-use luhomo_core::config::models::{ConfigurationItem, ConfigurationSource};
-use luhomo_core::proxy::core_type::ProxyCoreType;
-use luhomo_core::proxy::execution::ProxyCoreExecution;
 use luhomo_core::proxy::global_args::ProxyRunningArguments;
 use luhomo_core::proxy::launch_err::ProxyCoreError;
 use luhomo_core::proxy::launch_status::{ProxyApiStream, ProxyCoreStatus};
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::sync::watch;
+mod support;
 
-/// 进程测试共用 TCP 端口分配逻辑；串行执行以避免刚释放端口被另一用例复用。
-static PROCESS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// 每个用例独占的运行目录；离开作用域后删除其 YAML、日志和重启标记。
-struct TestRuntime(PathBuf);
-
-impl TestRuntime {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("luhomo-execution-test-{}", uuid::Uuid::new_v4()));
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    /// 返回测试替身实际启动过的进程次数。
-    fn launch_count(&self) -> usize {
-        std::fs::read_to_string(self.path().join("proxy-core-test-double.launch-count"))
-            .map(|content| content.lines().count())
-            .unwrap_or(0)
-    }
-
-    /// 返回测试核心重定向到日志文件的全部 stdout 行。
-    fn stdout_lines(&self) -> Vec<String> {
-        std::fs::read_to_string(self.path().join("logs/mihomo.stdout.log"))
-            .map(|content| content.lines().map(str::to_owned).collect())
-            .unwrap_or_default()
-    }
-}
-
-impl Drop for TestRuntime {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// 创建仅用于生成运行时 YAML 文件名的配置项。
-fn configuration() -> ConfigurationItem {
-    ConfigurationItem::builder()
-        .source(ConfigurationSource::LocalFile("proxy-core-test-double.yaml".to_owned()))
-        .display_name("proxy core test double")
-        .build()
-}
-
-/// 获取一个当前空闲的临时 TCP 地址，写入测试核心的 `external-controller` 配置。
-fn unused_tcp_address() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().to_string()
-}
-
-/// 使用 Cargo 构建的测试替身，而不是系统安装的 mihomo。
-///
-/// 替身兼容 Mihomo 的 `-d`/`-f` 参数和 `external-controller` 配置，因此仍使用
-/// `ProxyCoreType::Mihomo` 来测试真实的命令构造和运行时配置合并路径。
-fn execution(runtime: &TestRuntime, auto_restart: bool) -> ProxyCoreExecution {
-    ProxyCoreExecution::builder()
-        .core_type(ProxyCoreType::Mihomo)
-        .executable(env!("CARGO_BIN_EXE_proxy_core_test_double"))
-        .runtime_dir(runtime.path())
-        .auto_restart(auto_restart)
-        .build()
-}
-
-/// 构造一个可执行文件不存在的实例，用于验证启动前的失败路径。
-fn execution_with_missing_executable(runtime: &TestRuntime) -> ProxyCoreExecution {
-    ProxyCoreExecution::builder()
-        .core_type(ProxyCoreType::Mihomo)
-        .executable(runtime.path().join("missing-mihomo.exe"))
-        .runtime_dir(runtime.path())
-        .build()
-}
-
-/// 配置测试替身监听的 TCP API 地址。
-fn running_arguments(address: &str) -> ProxyRunningArguments {
-    ProxyRunningArguments::builder()
-        .external_controller(address.to_owned())
-        .build()
-}
-
-fn api_ready_output(address: &str) -> String {
-    format!("test proxy core API ready at {address}")
-}
-
-/// 等待监控任务发布满足条件的状态，超过五秒则视为状态机未按预期推进。
-async fn wait_for_status(
-    receiver: &mut watch::Receiver<ProxyCoreStatus>,
-    predicate: impl Fn(&ProxyCoreStatus) -> bool,
-) -> ProxyCoreStatus {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let status = receiver.borrow().clone();
-            if predicate(&status) {
-                return status;
-            }
-            receiver.changed().await.expect("execution status sender was dropped");
-        }
-    })
-    .await
-    .expect("timed out waiting for proxy core status")
-}
+use support::*;
 
 #[tokio::test]
 async fn launches_redirects_output_rejects_a_second_launch_and_shuts_down() {
@@ -137,6 +32,7 @@ async fn launches_redirects_output_rejects_a_second_launch_and_shuts_down() {
     assert!(matches!(second_launch, Err(ProxyCoreError::AlreadyRunning { .. })));
 
     execution.shutdown().await.unwrap();
+    assert_recorded_processes_are_exited(&runtime).await;
     assert_eq!(runtime.stdout_lines(), [api_ready_output(&address)]);
     assert!(matches!(execution.status(), ProxyCoreStatus::Stopped));
     assert!(matches!(execution.shutdown().await, Err(ProxyCoreError::NotRunning)));
@@ -166,6 +62,7 @@ async fn records_an_unexpected_exit_without_restarting_when_disabled() {
     })
     .await;
     assert!(matches!(status, ProxyCoreStatus::Crashed { exit_code: Some(23) }));
+    assert_recorded_processes_are_exited(&runtime).await;
     assert_eq!(runtime.stdout_lines(), [api_ready_output(&address)]);
 }
 
@@ -195,6 +92,7 @@ async fn restarts_after_a_crash_and_increments_the_generation() {
     assert!(matches!(status, ProxyCoreStatus::Running { generation: 2, .. }));
 
     execution.shutdown().await.unwrap();
+    assert_recorded_processes_are_exited(&runtime).await;
     assert_eq!(
         runtime.stdout_lines(),
         [api_ready_output(&address), api_ready_output(&address)]
@@ -227,6 +125,7 @@ async fn reports_a_process_that_exits_before_its_api_is_ready() {
         execution.status(),
         ProxyCoreStatus::Crashed { exit_code: Some(23) }
     ));
+    assert_recorded_processes_are_exited(&runtime).await;
     assert!(runtime.stdout_lines().is_empty());
 }
 
@@ -246,6 +145,7 @@ async fn rejects_a_missing_executable_before_starting_the_core() {
         .await;
 
     assert!(matches!(result, Err(ProxyCoreError::ExecutableNotFound(_))));
+    assert!(runtime.recorded_pids().is_empty());
     assert!(runtime.stdout_lines().is_empty());
     assert!(matches!(execution.status(), ProxyCoreStatus::Stopped));
 }
@@ -278,6 +178,7 @@ async fn fails_startup_and_kills_the_core_when_its_api_never_becomes_ready() {
         unreachable!("wait_for_status only returns Failed")
     };
     assert_eq!(message, error.to_string());
+    assert_recorded_processes_are_exited(&runtime).await;
     assert!(runtime.stdout_lines().is_empty());
 }
 
@@ -307,6 +208,9 @@ async fn rejects_startup_without_an_api_endpoint() {
         unreachable!("wait_for_status only returns Failed")
     };
     assert_eq!(message, error.to_string());
+    // API 端点校验立即失败，Child 会在测试替身的 main 开始前被终止，因而不应
+    // 留下任何已登记的测试核心 PID。
+    assert!(runtime.recorded_pids().is_empty());
     assert!(runtime.stdout_lines().is_empty());
 }
 
@@ -335,6 +239,7 @@ async fn marks_the_execution_failed_when_an_automatic_restart_cannot_open_its_ap
     };
     // 底层的 io::Error 文本随操作系统变化；校验稳定的错误类型前缀即可。
     assert!(message.starts_with("socket channel check failed:"));
+    assert_recorded_processes_are_exited(&runtime).await;
     assert_eq!(runtime.stdout_lines(), [api_ready_output(&address)]);
 }
 
@@ -367,6 +272,7 @@ async fn shutdown_during_restart_backoff_prevents_a_new_process_from_starting() 
     // 越过自动重启的退避时间后仍只能观察到首次启动，证明第二代进程没有被 spawn。
     tokio::time::sleep(Duration::from_millis(1_100)).await;
     assert_eq!(runtime.launch_count(), 1, "shutdown 后不应启动第二代测试核心进程");
+    assert_recorded_processes_are_exited(&runtime).await;
     assert_eq!(runtime.stdout_lines(), [api_ready_output(&address)]);
     assert!(matches!(execution.status(), ProxyCoreStatus::Stopped));
 }

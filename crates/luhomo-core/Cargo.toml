@@ -43,6 +43,7 @@ sha2 = "0.10"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+sysinfo = "0.31"
 
 [features]
 default = ["reqwest"]
