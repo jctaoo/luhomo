@@ -95,8 +95,8 @@ impl LaunchState {
             .map_err(ProxyCoreError::OutputRedirectFailed)?;
         let mut child = command.spawn().map_err(ProxyCoreError::SpawnFailed)?;
 
-        let exit_child_immediately = async move |mut child: Child, extend_err: Option<ProxyCoreError>| {
-            match child.wait().await {
+        let exit_child_immediately =
+            async move |mut child: Child, extend_err: Option<ProxyCoreError>| match child.wait().await {
                 Ok(exit_status) => {
                     let exit_code = exit_status.code();
                     if let Some(err) = extend_err {
@@ -118,8 +118,7 @@ impl LaunchState {
                     });
                     Err(ProxyCoreError::SpawnFailed(err))
                 }
-            }
-        };
+            };
 
         // Get pid and stream to communicate with the proxy core API.
         let pid = match child.id() {
@@ -142,10 +141,14 @@ impl LaunchState {
             Ok(stream) => stream,
             Err(error) => {
                 warn!(?error, "proxy core API did not become ready");
+
+                // 连接 controller stream 时意外退出
                 if let ProxyCoreError::ExitedBeforeReady { exit_code } = error {
                     self.status_tx.send_replace(ProxyCoreStatus::Crashed { exit_code });
                     return Err(error);
                 }
+
+                // 连接失败
                 let _ = child.start_kill();
                 return exit_child_immediately(child, Some(error)).await;
             }
@@ -305,39 +308,4 @@ impl LaunchState {
 /// 返回 `{runtime_dir}/{configuration uuid}.yaml` 的运行时配置路径。
 fn runtime_config_filepath(runtime_dir: impl AsRef<Path>, config_identity: uuid::Uuid) -> PathBuf {
     runtime_dir.as_ref().join(format!("{config_identity}.yaml"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn state() -> LaunchState {
-        let (status_tx, status_rx) = watch::channel(ProxyCoreStatus::Stopped);
-        LaunchState {
-            core_type: ProxyCoreType::Mihomo,
-            executable: PathBuf::from("mihomo"),
-            runtime_dir: std::env::temp_dir(),
-            status_tx,
-            status_rx,
-        }
-    }
-
-    #[tokio::test]
-    async fn ensure_api_ready_returns_the_connected_tcp_stream() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap().to_string();
-        let accept = tokio::spawn(async move { listener.accept().await.unwrap() });
-        let args = ProxyRunningArguments::builder().external_controller(address).build();
-        let stream = state().ensure_api_ready(&args, Duration::from_secs(1)).await.unwrap();
-        assert!(matches!(stream, ProxyApiStream::Tcp(_)));
-        accept.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn ensure_api_ready_rejects_missing_api_endpoint() {
-        let result = state()
-            .ensure_api_ready(&ProxyRunningArguments::default(), Duration::from_secs(1))
-            .await;
-        assert!(matches!(result, Err(ProxyCoreError::ApiEndpointNotConfigured)));
-    }
 }

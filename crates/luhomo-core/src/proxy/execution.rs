@@ -42,14 +42,17 @@ impl ProxyCoreExecution {
         /// 要启动的 proxy core 类型。
         core_type: ProxyCoreType,
         /// 指定 proxy core 可执行文件路径；默认按内核类型自动查找。
-        #[builder(into)] executable: Option<PathBuf>,
+        #[builder(into)]
+        executable: Option<PathBuf>,
         /// 指定代理核心的运行目录。
         ///
         /// 运行时 YAML 文件以及 `logs/{core}.stdout.log`、
         /// `logs/{core}.stderr.log` 都会写入该目录。
-        #[builder(into)] runtime_dir: Option<PathBuf>,
+        #[builder(into)]
+        runtime_dir: Option<PathBuf>,
         /// 是否在进程崩溃后自动重启，默认启用。
-        #[builder(default = true)] auto_restart: bool,
+        #[builder(default = true)]
+        auto_restart: bool,
     ) -> Self {
         let (status_tx, status_rx) = watch::channel(ProxyCoreStatus::Stopped);
         let executable = executable.unwrap_or_else(|| core_type.find_executable());
@@ -127,9 +130,7 @@ impl ProxyCoreExecution {
                             }
                             let exit_code = exit_status.code();
                             warn!(pid = current_pid, ?exit_code, "proxy core process exited unexpectedly");
-                            status_tx.send_replace(ProxyCoreStatus::Crashed {
-                                exit_code,
-                            });
+                            status_tx.send_replace(ProxyCoreStatus::Crashed { exit_code });
                             if !auto_restart {
                                 info!(pid = current_pid, "proxy core auto restart is disabled");
                                 break;

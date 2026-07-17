@@ -1,6 +1,6 @@
 use crate::proxy::manifest::ProxyCoreManifest;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, trace};
+use tracing::{info, trace};
 
 /// This enum represents the different types of proxy cores that can be used in the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

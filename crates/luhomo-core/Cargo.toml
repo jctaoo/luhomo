@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "proxy_core_test_double"
+path = "src/bin/proxy_core_test_double.rs"
+test = false
+bench = false
+
 [dependencies]
 tokio = { version = "1", features = ["net", "time", "macros", "fs", "process", "signal", "io-util", "io-std"] }
 serde = { version = "1", features = ["derive"] }
