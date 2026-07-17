@@ -31,6 +31,13 @@ impl TestRuntime {
             .map(|content| content.lines().count())
             .unwrap_or(0)
     }
+
+    /// 返回测试核心重定向到日志文件的全部 stdout 行。
+    fn stdout_lines(&self) -> Vec<String> {
+        std::fs::read_to_string(self.path().join("logs/mihomo.stdout.log"))
+            .map(|content| content.lines().map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
 }
 
 impl Drop for TestRuntime {
@@ -82,6 +89,10 @@ fn running_arguments(address: &str) -> ProxyRunningArguments {
         .build()
 }
 
+fn api_ready_output(address: &str) -> String {
+    format!("test proxy core API ready at {address}")
+}
+
 /// 等待监控任务发布满足条件的状态，超过五秒则视为状态机未按预期推进。
 async fn wait_for_status(
     receiver: &mut watch::Receiver<ProxyCoreStatus>,
@@ -125,10 +136,8 @@ async fn launches_redirects_output_rejects_a_second_launch_and_shuts_down() {
         .await;
     assert!(matches!(second_launch, Err(ProxyCoreError::AlreadyRunning { .. })));
 
-    let stdout = std::fs::read_to_string(runtime.path().join("logs/mihomo.stdout.log")).unwrap();
-    assert!(stdout.contains("test proxy core API ready"));
-
     execution.shutdown().await.unwrap();
+    assert_eq!(runtime.stdout_lines(), [api_ready_output(&address)]);
     assert!(matches!(execution.status(), ProxyCoreStatus::Stopped));
     assert!(matches!(execution.shutdown().await, Err(ProxyCoreError::NotRunning)));
 }
@@ -157,6 +166,7 @@ async fn records_an_unexpected_exit_without_restarting_when_disabled() {
     })
     .await;
     assert!(matches!(status, ProxyCoreStatus::Crashed { exit_code: Some(23) }));
+    assert_eq!(runtime.stdout_lines(), [api_ready_output(&address)]);
 }
 
 #[tokio::test]
@@ -185,6 +195,10 @@ async fn restarts_after_a_crash_and_increments_the_generation() {
     assert!(matches!(status, ProxyCoreStatus::Running { generation: 2, .. }));
 
     execution.shutdown().await.unwrap();
+    assert_eq!(
+        runtime.stdout_lines(),
+        [api_ready_output(&address), api_ready_output(&address)]
+    );
     assert!(matches!(execution.status(), ProxyCoreStatus::Stopped));
 }
 
@@ -213,6 +227,7 @@ async fn reports_a_process_that_exits_before_its_api_is_ready() {
         execution.status(),
         ProxyCoreStatus::Crashed { exit_code: Some(23) }
     ));
+    assert!(runtime.stdout_lines().is_empty());
 }
 
 #[tokio::test]
@@ -231,6 +246,7 @@ async fn rejects_a_missing_executable_before_starting_the_core() {
         .await;
 
     assert!(matches!(result, Err(ProxyCoreError::ExecutableNotFound(_))));
+    assert!(runtime.stdout_lines().is_empty());
     assert!(matches!(execution.status(), ProxyCoreStatus::Stopped));
 }
 
@@ -256,12 +272,13 @@ async fn fails_startup_and_kills_the_core_when_its_api_never_becomes_ready() {
         Err(error @ ProxyCoreError::SocketChannelCheckFailed(_)) => error,
         Err(error) => panic!("expected socket readiness failure, got {error:?}"),
         Ok(_) => panic!("launch unexpectedly succeeded"),
-};
+    };
     let status = wait_for_status(&mut statuses, |status| matches!(status, ProxyCoreStatus::Failed { .. })).await;
     let ProxyCoreStatus::Failed { message } = status else {
         unreachable!("wait_for_status only returns Failed")
     };
     assert_eq!(message, error.to_string());
+    assert!(runtime.stdout_lines().is_empty());
 }
 
 #[tokio::test]
@@ -290,6 +307,7 @@ async fn rejects_startup_without_an_api_endpoint() {
         unreachable!("wait_for_status only returns Failed")
     };
     assert_eq!(message, error.to_string());
+    assert!(runtime.stdout_lines().is_empty());
 }
 
 #[tokio::test]
@@ -317,6 +335,7 @@ async fn marks_the_execution_failed_when_an_automatic_restart_cannot_open_its_ap
     };
     // 底层的 io::Error 文本随操作系统变化；校验稳定的错误类型前缀即可。
     assert!(message.starts_with("socket channel check failed:"));
+    assert_eq!(runtime.stdout_lines(), [api_ready_output(&address)]);
 }
 
 #[tokio::test]
@@ -348,5 +367,6 @@ async fn shutdown_during_restart_backoff_prevents_a_new_process_from_starting() 
     // 越过自动重启的退避时间后仍只能观察到首次启动，证明第二代进程没有被 spawn。
     tokio::time::sleep(Duration::from_millis(1_100)).await;
     assert_eq!(runtime.launch_count(), 1, "shutdown 后不应启动第二代测试核心进程");
+    assert_eq!(runtime.stdout_lines(), [api_ready_output(&address)]);
     assert!(matches!(execution.status(), ProxyCoreStatus::Stopped));
 }
