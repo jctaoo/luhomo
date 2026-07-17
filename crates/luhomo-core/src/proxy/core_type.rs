@@ -54,7 +54,7 @@ impl ProxyCoreType {
 /// 按优先级搜索：
 /// 1. 环境变量 `MIHOMO_PATH`
 /// 2. 当前可执行文件同目录（`./mihomo` / `./mihomo.exe`）
-/// 3. Cargo 构建输出目录（`target/debug/` / `target/release/`）
+/// 3. （仅 debug）编译期 `CARGO_MANIFEST_DIR` 推导的 workspace `target/{debug,release}/`
 /// 4. 仅返回文件名，依赖系统 `PATH`
 fn find_mihomo_executable() -> PathBuf {
     #[cfg(windows)]
@@ -69,6 +69,8 @@ fn find_mihomo_executable() -> PathBuf {
             info!(path = %p.display(), source = "MIHOMO_PATH", "found mihomo executable");
             return p;
         }
+    } else {
+        trace!("MIHOMO_PATH not set, skipping environment variable search for mihomo executable");
     }
 
     if let Ok(current_exe) = std::env::current_exe()
@@ -82,9 +84,11 @@ fn find_mihomo_executable() -> PathBuf {
         }
     }
 
-    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        let manifest_dir = PathBuf::from(manifest);
-        if let Some(root) = find_cargo_workspace_root(&manifest_dir) {
+    #[cfg(debug_assertions)]
+    {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        if let Some(root) = find_cargo_workspace_root(manifest_dir) {
+            trace!(path = %root.display(), "Trying to find mihomo executable in Cargo workspace target directory");
             for profile in &["debug", "release"] {
                 let p = root.join("target").join(profile).join(executable_name);
                 trace!(path = %p.display(), source = "Cargo target directory", "checking mihomo executable");
@@ -93,6 +97,8 @@ fn find_mihomo_executable() -> PathBuf {
                     return p;
                 }
             }
+        } else {
+            trace!("Could not find Cargo workspace root from manifest dir: {}", manifest_dir.display());
         }
     }
 
@@ -101,6 +107,7 @@ fn find_mihomo_executable() -> PathBuf {
     fallback
 }
 
+#[cfg(debug_assertions)]
 fn find_cargo_workspace_root(manifest_dir: &Path) -> Option<&Path> {
     manifest_dir.ancestors().find(|directory| {
         std::fs::read_to_string(directory.join("Cargo.toml")).is_ok_and(|cargo_toml| cargo_toml.contains("[workspace]"))
