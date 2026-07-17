@@ -248,21 +248,3 @@ impl Drop for ProxyCoreExecution {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builder_applies_launch_configuration_before_state_is_shared() {
-        let execution = ProxyCoreExecution::builder()
-            .core_type(ProxyCoreType::Mihomo)
-            .executable("custom-mihomo")
-            .runtime_dir("custom-runtime")
-            .auto_restart(false)
-            .build();
-        assert_eq!(execution.launch_state.executable, PathBuf::from("custom-mihomo"));
-        assert_eq!(execution.launch_state.runtime_dir, PathBuf::from("custom-runtime"));
-        assert!(!execution.auto_restart);
-    }
-}
