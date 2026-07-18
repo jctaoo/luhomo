@@ -1,8 +1,11 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use bon::{Builder};
+use bon::Builder;
 
-use crate::proxy::{core_type::ProxyCoreType, global_args::ProxyRunningArguments};
+use crate::proxy::core_type::ProxyCoreType;
+use crate::proxy::global_args::ProxyRunningArguments;
+use crate::proxy::launch_err::ProxyCoreError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Builder)]
 pub struct LaunchContext {
@@ -47,14 +50,15 @@ pub enum ProxyApiStream {
 
 /// 代理核心启动实例，作为 [`ProxyCoreExecution::launch_once`] 的返回值.
 pub struct LaunchingInstance {
-  pub child: tokio::process::Child,
-  pub pid: u32,
-  pub api_stream: ProxyApiStream,
-  pub generation: u32,
+    pub child: tokio::process::Child,
+    pub pid: u32,
+    pub api_stream: ProxyApiStream,
+    pub generation: u32,
 }
 
 /// 代理核心运行状态
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ProxyCoreStatus {
     /// 正在启动
     Starting { attempt: u32 },
@@ -64,8 +68,24 @@ pub enum ProxyCoreStatus {
     Stopping { restarting: bool },
     /// 已正常停止或者未启动
     Stopped,
-    /// 失败
-    Failed { message: String },
+    /// 启动或重启失败，携带完整结构化错误
+    Failed { error: Arc<ProxyCoreError> },
     /// 异常崩溃退出
     Crashed { exit_code: Option<i32> },
+}
+
+impl From<ProxyCoreError> for ProxyCoreStatus {
+    fn from(error: ProxyCoreError) -> Self {
+        match error {
+            ProxyCoreError::ExitedBeforeReady { exit_code } => Self::Crashed { exit_code },
+            other => Self::Failed { error: Arc::new(other) },
+        }
+    }
+}
+
+impl ProxyCoreStatus {
+    /// 由错误生成状态；调用方仍保留原错误所有权。
+    pub fn from_error(error: &ProxyCoreError) -> Self {
+        Self::from(error.clone())
+    }
 }

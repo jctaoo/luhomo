@@ -252,10 +252,14 @@ async fn fails_startup_and_kills_the_core_when_its_api_never_becomes_ready() {
         Ok(_) => panic!("launch unexpectedly succeeded"),
     };
     let status = wait_for_status(&mut statuses, |status| matches!(status, ProxyCoreStatus::Failed { .. })).await;
-    let ProxyCoreStatus::Failed { message } = status else {
+    let ProxyCoreStatus::Failed { error: status_error } = status else {
         unreachable!("wait_for_status only returns Failed")
     };
-    assert_eq!(message, error.to_string());
+    assert!(matches!(
+        status_error.as_ref(),
+        ProxyCoreError::SocketChannelCheckFailed(_)
+    ));
+    assert_eq!(status_error.to_string(), error.to_string());
     assert_recorded_processes_are_exited(&runtime).await;
     assert!(runtime.stdout_lines().is_empty());
 }
@@ -282,10 +286,14 @@ async fn rejects_startup_without_an_api_endpoint() {
         Ok(_) => panic!("launch unexpectedly succeeded"),
     };
     let status = wait_for_status(&mut statuses, |status| matches!(status, ProxyCoreStatus::Failed { .. })).await;
-    let ProxyCoreStatus::Failed { message } = status else {
+    let ProxyCoreStatus::Failed { error: status_error } = status else {
         unreachable!("wait_for_status only returns Failed")
     };
-    assert_eq!(message, error.to_string());
+    assert!(matches!(
+        status_error.as_ref(),
+        ProxyCoreError::ApiEndpointNotConfigured
+    ));
+    assert_eq!(status_error.to_string(), error.to_string());
     // API 端点校验立即失败，Child 会在测试替身的 main 开始前被终止，因而不应
     // 留下任何已登记的测试核心 PID。
     assert!(runtime.recorded_pids().is_empty());
@@ -312,11 +320,13 @@ async fn marks_the_execution_failed_when_an_automatic_restart_cannot_open_its_ap
         .unwrap();
 
     let status = wait_for_status(&mut statuses, |status| matches!(status, ProxyCoreStatus::Failed { .. })).await;
-    let ProxyCoreStatus::Failed { message } = status else {
+    let ProxyCoreStatus::Failed { error } = status else {
         unreachable!("wait_for_status only returns Failed")
     };
-    // 底层的 io::Error 文本随操作系统变化；校验稳定的错误类型前缀即可。
-    assert!(message.starts_with("socket channel check failed:"));
+    assert!(matches!(
+        error.as_ref(),
+        ProxyCoreError::SocketChannelCheckFailed(_)
+    ));
     assert_recorded_processes_are_exited(&runtime).await;
     assert_eq!(runtime.stdout_lines(), [api_ready_output(&address)]);
 }

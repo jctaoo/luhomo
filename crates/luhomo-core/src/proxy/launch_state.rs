@@ -50,7 +50,7 @@ impl LaunchState {
         // Check if the executable exists before proceeding.
         if !tokio::fs::try_exists(&self.executable)
             .await
-            .map_err(ProxyCoreError::ConfigError)?
+            .map_err(ProxyCoreError::config_error)?
         {
             return Err(ProxyCoreError::ExecutableNotFound(self.executable.clone()));
         }
@@ -64,7 +64,7 @@ impl LaunchState {
         let args_unchanged = context.previous_running_args.as_ref() == Some(&context.running_args);
         let runtime_config_exists = tokio::fs::try_exists(&runtime_config_path)
             .await
-            .map_err(ProxyCoreError::ConfigError)?;
+            .map_err(ProxyCoreError::config_error)?;
         let need_regenerate_config = !(source_unchanged && args_unchanged && runtime_config_exists);
 
         if need_regenerate_config {
@@ -107,8 +107,8 @@ impl LaunchState {
 
         let mut command = self
             .create_child_command(&runtime_config_path, &log_dir)
-            .map_err(ProxyCoreError::OutputRedirectFailed)?;
-        let mut child = command.spawn().map_err(ProxyCoreError::SpawnFailed)?;
+            .map_err(ProxyCoreError::output_redirect_failed)?;
+        let mut child = command.spawn().map_err(ProxyCoreError::spawn_failed)?;
 
         let exit_child_immediately =
             async move |mut child: Child, extend_err: Option<ProxyCoreError>| match child.wait().await {
@@ -116,22 +116,20 @@ impl LaunchState {
                     let exit_code = exit_status.code();
                     if let Some(err) = extend_err {
                         debug!(?err, ?exit_code, "proxy core process terminated after failed startup");
-                        self.status_tx.send_replace(ProxyCoreStatus::Failed {
-                            message: err.to_string(),
-                        });
+                        self.status_tx.send_replace(ProxyCoreStatus::from_error(&err));
                         Err(err)
                     } else {
                         warn!(exit_code, "child process exited immediately after spawn");
-                        self.status_tx.send_replace(ProxyCoreStatus::Crashed { exit_code });
-                        Err(ProxyCoreError::ExitedBeforeReady { exit_code })
+                        let err = ProxyCoreError::ExitedBeforeReady { exit_code };
+                        self.status_tx.send_replace(ProxyCoreStatus::from_error(&err));
+                        Err(err)
                     }
                 }
                 Err(err) => {
                     warn!(?err, "failed to wait for child process exit status");
-                    self.status_tx.send_replace(ProxyCoreStatus::Failed {
-                        message: format!("failed to wait for child process exit status: {err}"),
-                    });
-                    Err(ProxyCoreError::SpawnFailed(err))
+                    let err = ProxyCoreError::spawn_failed(err);
+                    self.status_tx.send_replace(ProxyCoreStatus::from_error(&err));
+                    Err(err)
                 }
             };
 
@@ -197,7 +195,7 @@ impl LaunchState {
             name = Some(
                 path.as_str()
                     .to_fs_name::<GenericFilePath>()
-                    .map_err(ProxyCoreError::SocketChannelCheckFailed)?,
+                    .map_err(ProxyCoreError::socket_channel_check_failed)?,
             );
         }
         #[cfg(windows)]
@@ -206,7 +204,7 @@ impl LaunchState {
             name = Some(
                 pipe.as_str()
                     .to_ns_name::<GenericNamespaced>()
-                    .map_err(ProxyCoreError::SocketChannelCheckFailed)?,
+                    .map_err(ProxyCoreError::socket_channel_check_failed)?,
             );
         }
         // 如果配置了本地 socket 名称，则优先尝试连接。
@@ -214,20 +212,20 @@ impl LaunchState {
             let stream = tokio::time::timeout(timeout, async move {
                 interprocess::local_socket::tokio::Stream::connect(name)
                     .await
-                    .map_err(ProxyCoreError::SocketChannelCheckFailed)
+                    .map_err(ProxyCoreError::socket_channel_check_failed)
             })
             .await
-            .map_err(ProxyCoreError::SocketChannelCheckTimeout)??;
+            .map_err(ProxyCoreError::socket_channel_check_timeout)??;
             return Ok(ProxyApiStream::Local(stream));
         }
         if let Some(addr) = &args.external_controller {
             let stream = tokio::time::timeout(timeout, async move {
                 tokio::net::TcpStream::connect(addr.as_str())
                     .await
-                    .map_err(ProxyCoreError::SocketChannelCheckFailed)
+                    .map_err(ProxyCoreError::socket_channel_check_failed)
             })
             .await
-            .map_err(ProxyCoreError::SocketChannelCheckTimeout)??;
+            .map_err(ProxyCoreError::socket_channel_check_timeout)??;
             return Ok(ProxyApiStream::Tcp(stream));
         }
         Err(ProxyCoreError::ApiEndpointNotConfigured)
@@ -250,10 +248,10 @@ impl LaunchState {
             .get_manifest()
             .merge_runtime_manifest(config, args)
             .await
-            .map_err(ProxyCoreError::ConfigError)?;
+            .map_err(ProxyCoreError::config_error)?;
         tokio::fs::write(&target_path, build_args)
             .await
-            .map_err(ProxyCoreError::ConfigError)?;
+            .map_err(ProxyCoreError::config_error)?;
         info!(target_path = %target_path.as_ref().display(), "wrote merged runtime configuration file");
         Ok(())
     }
@@ -262,13 +260,13 @@ impl LaunchState {
     async fn prepare_runtime_dir(&self) -> Result<(), ProxyCoreError> {
         if tokio::fs::try_exists(&self.runtime_dir)
             .await
-            .map_err(ProxyCoreError::ConfigError)?
+            .map_err(ProxyCoreError::config_error)?
         {
             return Ok(());
         }
         tokio::fs::create_dir_all(&self.runtime_dir)
             .await
-            .map_err(ProxyCoreError::ConfigError)?;
+            .map_err(ProxyCoreError::config_error)?;
         info!(runtime_dir = %self.runtime_dir.display(), "prepared proxy core runtime directory");
         Ok(())
     }
@@ -278,13 +276,13 @@ impl LaunchState {
         let log_dir = self.runtime_dir.join("logs");
         if tokio::fs::try_exists(&log_dir)
             .await
-            .map_err(ProxyCoreError::OutputRedirectFailed)?
+            .map_err(ProxyCoreError::output_redirect_failed)?
         {
             return Ok(log_dir);
         }
         tokio::fs::create_dir_all(&log_dir)
             .await
-            .map_err(ProxyCoreError::OutputRedirectFailed)?;
+            .map_err(ProxyCoreError::output_redirect_failed)?;
         info!(log_dir = %log_dir.display(), "prepared proxy core log directory");
         Ok(log_dir)
     }

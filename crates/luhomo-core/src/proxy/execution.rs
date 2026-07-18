@@ -82,6 +82,13 @@ impl ProxyCoreExecution {
     /// 再次从 source 加载配置并尝试重新启动。
     ///
     /// 返回已就绪且已连接的 API 流。
+    ///
+    /// # 状态与错误
+    ///
+    /// 在进入 [`ProxyCoreStatus::Starting`] 之前的失败（例如加载配置源、可执行文件不存在、
+    /// 准备运行目录或写入运行时 YAML）**不会**更新 status，仅通过 `Err` 返回
+    /// [`ProxyCoreError`]。调用方应同时检查返回值与 [`Self::status`] / [`Self::status_watcher`]。
+    /// 一旦已发布 `Starting`，后续启动失败会将 status 置为 `Failed` 或 `Crashed`。
     pub async fn launch<S>(
         &mut self,
         configuration_item: &ConfigurationItem,
@@ -98,7 +105,10 @@ impl ProxyCoreExecution {
             .running_args(args.clone())
             .auto_restart(self.auto_restart)
             .build();
-        let config = config_source.load(&context.config_identity).await.map_err(ProxyCoreError::ConfigSource)?;
+        let config = config_source
+            .load(&context.config_identity)
+            .await
+            .map_err(ProxyCoreError::config_source)?;
         let LaunchingInstance {
             mut child,
             pid,
@@ -162,9 +172,9 @@ impl ProxyCoreExecution {
                                         Ok(config) => config,
                                         Err(error) => {
                                             warn!(?error, "failed to load configuration for proxy core restart");
-                                            status_tx.send_replace(ProxyCoreStatus::Failed {
-                                                message: ProxyCoreError::ConfigSource(error).to_string(),
-                                            });
+                                            status_tx.send_replace(ProxyCoreStatus::from(
+                                                ProxyCoreError::config_source(error),
+                                            ));
                                             break;
                                         }
                                     }
@@ -187,9 +197,7 @@ impl ProxyCoreExecution {
                                         status_tx.send_replace(ProxyCoreStatus::Stopped);
                                     } else {
                                         warn!(?error, "failed to restart proxy core");
-                                        status_tx.send_replace(ProxyCoreStatus::Failed {
-                                            message: error.to_string(),
-                                        });
+                                        status_tx.send_replace(ProxyCoreStatus::from(error));
                                     }
                                     break;
                                 }
@@ -200,7 +208,7 @@ impl ProxyCoreExecution {
                                 ProxyCoreStatus::Stopped
                             } else {
                                 warn!(pid = current_pid, ?error, "failed to wait for proxy core process");
-                                ProxyCoreStatus::Crashed { exit_code: None }
+                                ProxyCoreStatus::from(ProxyCoreError::spawn_failed(error))
                             });
                             break;
                         }
@@ -245,7 +253,7 @@ impl ProxyCoreExecution {
             token.cancel();
         }
         if let Some(handle) = self.monitor_handle.take() {
-            handle.await.map_err(ProxyCoreError::MonitorTaskFailed)?;
+            handle.await.map_err(ProxyCoreError::monitor_task_failed)?;
         }
         self.shutdown_token = None;
         info!("proxy core stopped");

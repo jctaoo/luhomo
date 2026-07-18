@@ -1,8 +1,9 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use thiserror::Error;
 
 /// 代理核心错误
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum ProxyCoreError {
     #[error("executable not found at {0}")]
     ExecutableNotFound(PathBuf),
@@ -17,26 +18,56 @@ pub enum ProxyCoreError {
     ExitedBeforeReady { exit_code: Option<i32> },
 
     #[error("failed to spawn process: {0}")]
-    SpawnFailed(#[source] std::io::Error),
+    SpawnFailed(#[source] Arc<std::io::Error>),
 
     #[error("failed to read or write runtime config: {0}")]
-    ConfigError(#[source] std::io::Error),
+    ConfigError(#[source] Arc<std::io::Error>),
 
     #[error("failed to load configuration content: {0}")]
-    ConfigSource(#[source] crate::config::storage::ConfigurationStorageError),
+    ConfigSource(#[source] Arc<crate::config::storage::ConfigurationStorageError>),
 
     #[error("failed to redirect proxy core output: {0}")]
-    OutputRedirectFailed(#[source] std::io::Error),
+    OutputRedirectFailed(#[source] Arc<std::io::Error>),
 
     #[error("monitor task failed: {0}")]
-    MonitorTaskFailed(#[source] tokio::task::JoinError),
+    MonitorTaskFailed(#[source] Arc<tokio::task::JoinError>),
 
     #[error("socket channel check failed: {0}")]
-    SocketChannelCheckFailed(#[source] std::io::Error),
+    SocketChannelCheckFailed(#[source] Arc<std::io::Error>),
 
     #[error("socket channel check timed out")]
-    SocketChannelCheckTimeout(#[source] tokio::time::error::Elapsed),
+    SocketChannelCheckTimeout(#[source] Arc<tokio::time::error::Elapsed>),
 
     #[error("no proxy core API endpoint is configured")]
     ApiEndpointNotConfigured,
+}
+
+impl ProxyCoreError {
+    pub(crate) fn spawn_failed(error: std::io::Error) -> Self {
+        Self::SpawnFailed(Arc::new(error))
+    }
+
+    pub(crate) fn config_error(error: std::io::Error) -> Self {
+        Self::ConfigError(Arc::new(error))
+    }
+
+    pub(crate) fn config_source(error: crate::config::storage::ConfigurationStorageError) -> Self {
+        Self::ConfigSource(Arc::new(error))
+    }
+
+    pub(crate) fn output_redirect_failed(error: std::io::Error) -> Self {
+        Self::OutputRedirectFailed(Arc::new(error))
+    }
+
+    pub(crate) fn monitor_task_failed(error: tokio::task::JoinError) -> Self {
+        Self::MonitorTaskFailed(Arc::new(error))
+    }
+
+    pub(crate) fn socket_channel_check_failed(error: std::io::Error) -> Self {
+        Self::SocketChannelCheckFailed(Arc::new(error))
+    }
+
+    pub(crate) fn socket_channel_check_timeout(error: tokio::time::error::Elapsed) -> Self {
+        Self::SocketChannelCheckTimeout(Arc::new(error))
+    }
 }
