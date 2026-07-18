@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{debug, instrument, trace, warn};
 
 use crate::config::models::ConfigurationItem;
 
@@ -53,7 +53,7 @@ impl ConfigurationStorage {
         }
         let content = tokio::fs::read(&path).await?;
         let items: Vec<ConfigurationItem> = serde_json::from_slice(&content)?;
-        debug!(path = %path.display(), count = items.len(), "read configuration index");
+        trace!(path = %path.display(), count = items.len(), "read configuration index");
         Ok(items)
     }
 
@@ -70,51 +70,53 @@ impl ConfigurationStorage {
 
     pub async fn list(&self) -> Result<Vec<ConfigurationItem>, ConfigurationStorageError> {
         let items = self.read_indexes().await?;
-        info!(count = items.len(), "loaded configurations from storage");
+        debug!(path = %self.indexes_path().display(), count = items.len(), "loaded configurations from storage");
         Ok(items)
     }
 
+    #[instrument(name = "cfgstore.get", skip(self), fields(uuid = %uuid))]
     pub async fn get(&self, uuid: &uuid::Uuid) -> Result<Bytes, ConfigurationStorageError> {
-        debug!(uuid = %uuid, "loading configuration content from storage");
+        let path = self.file_path(uuid);
+        trace!(path = %path.display(), "trying to read configuration content from storage");
         let items = self.read_indexes().await?;
         if !items.iter().any(|item| item.uuid == *uuid) {
-            warn!(uuid = %uuid, "configuration content not found in storage index");
+            warn!(path = %path.display(), "configuration content not found in storage index");
             return Err(ConfigurationStorageError::NotFound(*uuid));
         }
-        let path = self.file_path(uuid);
         let content = tokio::fs::read(&path).await?;
-        debug!(uuid = %uuid, bytes = content.len(), "loaded configuration content from storage");
+        debug!(path = %path.display(), bytes = content.len(), "loaded configuration content from storage");
         Ok(Bytes::from(content))
     }
 
+    #[instrument(name = "cfgstore.delete", skip(self), fields(uuid = %uuid))]
     pub async fn delete(&self, uuid: &uuid::Uuid) -> Result<(), ConfigurationStorageError> {
-        debug!(uuid = %uuid, "removing configuration from storage");
+        let path = self.file_path(uuid);
+        debug!(path = %path.display(), "removing configuration from storage");
         let mut items = self.read_indexes().await?;
         let len_before = items.len();
         items.retain(|item| item.uuid != *uuid);
         if items.len() == len_before {
-            warn!(uuid = %uuid, "configuration not found in storage");
+            warn!(path = %path.display(), "configuration not found in storage");
             return Err(ConfigurationStorageError::NotFound(*uuid));
         }
         self.write_indexes(&items).await?;
 
-        let path = self.file_path(uuid);
         if path.exists() {
             tokio::fs::remove_file(&path).await?;
         }
-        info!(uuid = %uuid, "removed configuration from storage");
+        debug!(path = %path.display(), "removed configuration from storage");
         Ok(())
     }
 
+    #[instrument(name = "cfgstore.update", skip(self, item, content), fields(uuid = %item.uuid))]
     pub async fn update(
         &self,
         item: &ConfigurationItem,
         content: &Bytes,
     ) -> Result<(), ConfigurationStorageError> {
-        debug!(uuid = %item.uuid, bytes = content.len(), "writing configuration to storage");
-        tokio::fs::create_dir_all(&self.base_dir).await?;
-
         let content_path = self.file_path(&item.uuid);
+        debug!(path = %content_path.display(), bytes = content.len(), "writing configuration to storage");
+        tokio::fs::create_dir_all(&self.base_dir).await?;
         tokio::fs::write(&content_path, content).await?;
 
         let mut items = self.read_indexes().await?;
@@ -125,7 +127,7 @@ impl ConfigurationStorage {
         }
         self.write_indexes(&items).await?;
 
-        info!(uuid = %item.uuid, count = items.len(), "stored configuration");
+        debug!(path = %content_path.display(), count = items.len(), "stored configuration");
         Ok(())
     }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Child;
 use tokio::sync::watch;
-use tracing::{debug, info, warn};
+use tracing::{Instrument, debug, info, instrument, warn};
 
 enum MonitorEvent {
     ShutdownRequested,
@@ -39,6 +39,7 @@ pub struct ProxyCoreExecution {
 impl ProxyCoreExecution {
     /// 创建新的执行实例，并按内核类型查找 proxy core 可执行文件。
     #[builder]
+    #[instrument(name = "exec.new", skip(executable, runtime_dir), fields(core = %core_type.as_ref(), auto_restart))]
     pub fn new(
         /// 要启动的 proxy core 类型。
         core_type: ProxyCoreType,
@@ -89,6 +90,7 @@ impl ProxyCoreExecution {
     /// 准备运行目录或写入运行时 YAML）**不会**更新 status，仅通过 `Err` 返回
     /// [`ProxyCoreError`]。调用方应同时检查返回值与 [`Self::status`] / [`Self::status_watcher`]。
     /// 一旦已发布 `Starting`，后续启动失败会将 status 置为 `Failed` 或 `Crashed`。
+    #[instrument(name = "exec.launch", skip(self, configuration_item, config_source, args), fields(core = %self.launch_state.core_type.as_ref()))]
     pub async fn launch<S>(
         &mut self,
         configuration_item: &ConfigurationItem,
@@ -98,6 +100,11 @@ impl ProxyCoreExecution {
     where
         S: RuntimeConfigSource + 'static,
     {
+        info!(
+            configuration = %configuration_item.display_name,
+            uuid = %configuration_item.uuid,
+            "launching proxy core"
+        );
         let mut context = LaunchContext::builder()
             .core_type(self.launch_state.core_type.clone())
             .config_identity(configuration_item.uuid)
@@ -123,99 +130,103 @@ impl ProxyCoreExecution {
         let launch_state = Arc::clone(&self.launch_state);
 
         info!(pid, generation, "starting proxy core monitor task");
-        let handle = tokio::spawn(async move {
-            let mut current_pid = pid;
-            loop {
-                match Self::wait_for_event(&mut child, &shutdown_token).await {
-                    MonitorEvent::ShutdownRequested => {
-                        debug!(pid = current_pid, "proxy core monitor received shutdown request");
-                        let _ = child.start_kill();
-                        let _ = child.wait().await;
-                        status_tx.send_replace(ProxyCoreStatus::Stopped);
-                        break;
-                    }
-                    MonitorEvent::ChildExited(result) => match result {
-                        Ok(exit_status) => {
-                            if shutdown_token.is_cancelled() {
-                                status_tx.send_replace(ProxyCoreStatus::Stopped);
-                                break;
-                            }
-                            let exit_code = exit_status.code();
-                            warn!(pid = current_pid, ?exit_code, "proxy core process exited unexpectedly");
-                            status_tx.send_replace(ProxyCoreStatus::Crashed { exit_code });
-                            if !auto_restart {
-                                info!(pid = current_pid, "proxy core auto restart is disabled");
-                                break;
-                            }
-                            let shutdown_requested = tokio::select! {
-                                biased;
-                                _ = shutdown_token.cancelled() => true,
-                                _ = tokio::time::sleep(Duration::from_secs(1)) => false,
-                            };
-                            if shutdown_requested || shutdown_token.is_cancelled() {
-                                status_tx.send_replace(ProxyCoreStatus::Stopped);
-                                break;
-                            }
-                            info!(
-                                pid = current_pid,
-                                next_attempt = context.current_attempts.saturating_add(1),
-                                "restarting proxy core after unexpected exit"
-                            );
-                            let config = tokio::select! {
-                                biased;
-                                _ = shutdown_token.cancelled() => {
+        let monitor_span = tracing::Span::current();
+        let handle = tokio::spawn(
+            async move {
+                let mut current_pid = pid;
+                loop {
+                    match Self::wait_for_event(&mut child, &shutdown_token).await {
+                        MonitorEvent::ShutdownRequested => {
+                            debug!(pid = current_pid, "proxy core monitor received shutdown request");
+                            let _ = child.start_kill();
+                            let _ = child.wait().await;
+                            status_tx.send_replace(ProxyCoreStatus::Stopped);
+                            break;
+                        }
+                        MonitorEvent::ChildExited(result) => match result {
+                            Ok(exit_status) => {
+                                if shutdown_token.is_cancelled() {
                                     status_tx.send_replace(ProxyCoreStatus::Stopped);
                                     break;
                                 }
-                                result = config_source.load(&context.config_identity) => {
-                                    match result {
-                                        Ok(config) => config,
-                                        Err(error) => {
-                                            warn!(?error, "failed to load configuration for proxy core restart");
-                                            status_tx.send_replace(ProxyCoreStatus::from(
-                                                ProxyCoreError::config_source(error),
-                                            ));
-                                            break;
-                                        }
-                                    }
-                                }
-                            };
-                            match launch_state.launch_once(&mut context, config).await {
-                                Ok(LaunchingInstance {
-                                    child: new_child,
-                                    pid,
-                                    api_stream: _,
-                                    generation,
-                                }) => {
-                                    child = new_child;
-                                    current_pid = pid;
-                                    status_tx.send_replace(ProxyCoreStatus::Running { pid, generation });
-                                    info!(pid, generation, "proxy core restart completed");
-                                }
-                                Err(error) => {
-                                    if shutdown_token.is_cancelled() {
-                                        status_tx.send_replace(ProxyCoreStatus::Stopped);
-                                    } else {
-                                        warn!(?error, "failed to restart proxy core");
-                                        status_tx.send_replace(ProxyCoreStatus::from(error));
-                                    }
+                                let exit_code = exit_status.code();
+                                warn!(pid = current_pid, ?exit_code, "proxy core process exited unexpectedly");
+                                status_tx.send_replace(ProxyCoreStatus::Crashed { exit_code });
+                                if !auto_restart {
+                                    info!(pid = current_pid, "proxy core auto restart is disabled");
                                     break;
                                 }
+                                let shutdown_requested = tokio::select! {
+                                    biased;
+                                    _ = shutdown_token.cancelled() => true,
+                                    _ = tokio::time::sleep(Duration::from_secs(1)) => false,
+                                };
+                                if shutdown_requested || shutdown_token.is_cancelled() {
+                                    status_tx.send_replace(ProxyCoreStatus::Stopped);
+                                    break;
+                                }
+                                info!(
+                                    pid = current_pid,
+                                    next_attempt = context.current_attempts.saturating_add(1),
+                                    "restarting proxy core after unexpected exit"
+                                );
+                                let config = tokio::select! {
+                                    biased;
+                                    _ = shutdown_token.cancelled() => {
+                                        status_tx.send_replace(ProxyCoreStatus::Stopped);
+                                        break;
+                                    }
+                                    result = config_source.load(&context.config_identity) => {
+                                        match result {
+                                            Ok(config) => config,
+                                            Err(error) => {
+                                                warn!(?error, "failed to load configuration for proxy core restart");
+                                                status_tx.send_replace(ProxyCoreStatus::from(
+                                                    ProxyCoreError::config_source(error),
+                                                ));
+                                                break;
+                                            }
+                                        }
+                                    }
+                                };
+                                match launch_state.launch_once(&mut context, config).await {
+                                    Ok(LaunchingInstance {
+                                        child: new_child,
+                                        pid,
+                                        api_stream: _,
+                                        generation,
+                                    }) => {
+                                        child = new_child;
+                                        current_pid = pid;
+                                        status_tx.send_replace(ProxyCoreStatus::Running { pid, generation });
+                                        info!(pid, generation, "proxy core restart completed");
+                                    }
+                                    Err(error) => {
+                                        if shutdown_token.is_cancelled() {
+                                            status_tx.send_replace(ProxyCoreStatus::Stopped);
+                                        } else {
+                                            warn!(?error, "failed to restart proxy core");
+                                            status_tx.send_replace(ProxyCoreStatus::from(error));
+                                        }
+                                        break;
+                                    }
+                                }
                             }
-                        }
-                        Err(error) => {
-                            status_tx.send_replace(if shutdown_token.is_cancelled() {
-                                ProxyCoreStatus::Stopped
-                            } else {
-                                warn!(pid = current_pid, ?error, "failed to wait for proxy core process");
-                                ProxyCoreStatus::from(ProxyCoreError::spawn_failed(error))
-                            });
-                            break;
-                        }
-                    },
+                            Err(error) => {
+                                status_tx.send_replace(if shutdown_token.is_cancelled() {
+                                    ProxyCoreStatus::Stopped
+                                } else {
+                                    warn!(pid = current_pid, ?error, "failed to wait for proxy core process");
+                                    ProxyCoreStatus::from(ProxyCoreError::spawn_failed(error))
+                                });
+                                break;
+                            }
+                        },
+                    }
                 }
             }
-        });
+            .instrument(monitor_span),
+        );
 
         self.launch_state
             .status_tx
@@ -239,6 +250,7 @@ impl ProxyCoreExecution {
     /// 关闭代理核心。
     ///
     /// 发送关闭信号给监控任务，由监控任务 kill 进程并清理。
+    #[instrument(name = "exec.shutdown", skip(self))]
     pub async fn shutdown(&mut self) -> Result<(), ProxyCoreError> {
         match *self.launch_state.status_rx.borrow() {
             ProxyCoreStatus::Stopping { .. } | ProxyCoreStatus::Stopped => return Err(ProxyCoreError::NotRunning),

@@ -1,5 +1,5 @@
-pub mod models;
 pub mod fetcher;
+pub mod models;
 pub mod runtime_source;
 pub mod storage;
 
@@ -9,7 +9,7 @@ use bytes::Bytes;
 #[cfg(feature = "reqwest")]
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
 use fetcher::{ConfigurationFetcher, ConfigurationFetcherError};
 use models::{ConfigurationItem, ConfigurationSource};
@@ -30,9 +30,7 @@ pub fn source_display_name(source: &ConfigurationSource) -> String {
             .and_then(|n| n.to_str())
             .unwrap_or(path)
             .to_string(),
-        ConfigurationSource::RemoteUrl { url, .. } => {
-            url.host_str().unwrap_or(url.as_str()).to_string()
-        }
+        ConfigurationSource::RemoteUrl { url, .. } => url.host_str().unwrap_or(url.as_str()).to_string(),
     }
 }
 
@@ -42,31 +40,29 @@ pub trait ConfigurationManager {
     fn storage(&self) -> &ConfigurationStorage;
     fn fetcher(&self) -> &Self::Fetcher;
 
-    async fn add(
-        &self,
-        source: ConfigurationSource,
-    ) -> Result<ConfigurationItem, ConfigurationManagerError> {
+    #[instrument(name = "cfgmgr.add", skip(self, source))]
+    async fn add(&self, source: ConfigurationSource) -> Result<ConfigurationItem, ConfigurationManagerError> {
         let item = ConfigurationItem::builder()
             .source(source.clone())
             .display_name(source_display_name(&source))
             .build();
-
         info!(uuid = %item.uuid, display_name = %item.display_name, "adding configuration");
 
         let content = match self.fetcher().fetch_configuration(&source, None).await {
             Ok(content) => content,
             Err(error) => {
-                warn!(uuid = %item.uuid, error = %error, "failed to fetch configuration");
+                warn!(error = %error, "failed to fetch configuration");
                 return Err(error.into());
             }
         };
         self.storage().update(&item, &content).await?;
 
-        info!(uuid = %item.uuid, bytes = content.len(), "configuration added");
+        info!(bytes = content.len(), "configuration added");
 
         Ok(item)
     }
 
+    #[instrument(name = "cfgmgr.list", skip(self))]
     async fn list(&self) -> Result<Vec<ConfigurationItem>, ConfigurationManagerError> {
         debug!("listing configurations");
         let items = self.storage().list().await?;
@@ -74,44 +70,38 @@ pub trait ConfigurationManager {
         Ok(items)
     }
 
-    async fn get_content(
-        &self,
-        uuid: &uuid::Uuid,
-    ) -> Result<Bytes, ConfigurationManagerError> {
-        debug!(uuid = %uuid, "reading configuration content");
+    #[instrument(name = "cfgmgr.get", skip(self, uuid))]
+    async fn get_content(&self, uuid: &uuid::Uuid) -> Result<Bytes, ConfigurationManagerError> {
+        debug!("reading configuration content");
         let content = self.storage().get(uuid).await?;
-        info!(uuid = %uuid, bytes = content.len(), "read configuration content");
+        info!(bytes = content.len(), "read configuration content");
         Ok(content)
     }
 
+    #[instrument(name = "cfgmgr.delete", skip(self, uuid))]
     async fn delete(&self, uuid: &uuid::Uuid) -> Result<(), ConfigurationManagerError> {
-        info!(uuid = %uuid, "deleting configuration");
+        debug!("deleting configuration");
         self.storage().delete(uuid).await?;
-        info!(uuid = %uuid, "configuration deleted");
+        info!("configuration deleted");
         Ok(())
     }
 
-    async fn update(
-        &self,
-        uuid: &uuid::Uuid,
-    ) -> Result<ConfigurationItem, ConfigurationManagerError> {
-        info!(uuid = %uuid, "updating configuration");
+    #[instrument(name = "cfgmgr.update", skip(self, uuid))]
+    async fn update(&self, uuid: &uuid::Uuid) -> Result<ConfigurationItem, ConfigurationManagerError> {
+        debug!("updating configuration");
         let items = self.storage().list().await?;
         let item = items
             .iter()
             .find(|i| i.uuid == *uuid)
             .ok_or(ConfigurationStorageError::NotFound(*uuid))?;
 
-        let content = self
-            .fetcher()
-            .fetch_configuration(&item.source, Some(item))
-            .await?;
+        let content = self.fetcher().fetch_configuration(&item.source, Some(item)).await?;
 
         let mut updated = item.clone();
         updated.updated_at = time::OffsetDateTime::now_utc();
         self.storage().update(&updated, &content).await?;
 
-        info!(uuid = %uuid, bytes = content.len(), "configuration updated");
+        info!(bytes = content.len(), "configuration updated");
 
         Ok(updated)
     }

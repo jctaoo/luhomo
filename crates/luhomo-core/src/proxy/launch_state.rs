@@ -10,7 +10,7 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 /// 启动时固定的配置，以及执行所有者和监控任务共享的状态通道。
 ///
@@ -31,11 +31,23 @@ impl LaunchState {
     /// 子进程并等待其 API 就绪。成功时会更新 `context.current_attempts`、
     /// `context.source_content_hash` 和 `context.previous_running_args`；当源配置、
     /// 运行参数与已写入记录一致且运行时文件仍存在时，复用已有的 YAML。
+    #[instrument(name = "exec.launch-once", skip(self, context, config))]
     pub(crate) async fn launch_once(
         &self,
         context: &mut LaunchContext,
         config: impl AsRef<[u8]> + Send,
     ) -> Result<LaunchingInstance, ProxyCoreError> {
+        info!(
+            attempt = context.current_attempts.saturating_add(1),
+            context = %serde_json::json!({
+                "runtime_dir": &context.runtime_dir,
+                "auto_restart": context.auto_restart,
+                "has_cached_config": context.source_content_hash.is_some(),
+                "has_cached_running_args": context.previous_running_args.is_some(),
+                "running_args": &context.running_args,
+            }),
+            "launching proxy core once"
+        );
         // Check the current status to ensure we are not already running or starting.
         match *self.status_rx.borrow() {
             ProxyCoreStatus::Running { pid, .. } => return Err(ProxyCoreError::AlreadyRunning { pid: Some(pid) }),
@@ -71,7 +83,6 @@ impl LaunchState {
             if context.source_content_hash.is_some() || context.previous_running_args.is_some() {
                 if !source_unchanged {
                     info!(
-                        config_identity = %context.config_identity,
                         "source configuration content changed, regenerating runtime config"
                     );
                 }
@@ -100,7 +111,7 @@ impl LaunchState {
         }
 
         // Start the proxy core process.
-        info!(core = self.core_type.as_ref(), "starting proxy core");
+        info!("starting proxy core");
         context.current_attempts = context.current_attempts.saturating_add(1);
         let attempt = context.current_attempts;
         self.status_tx.send_replace(ProxyCoreStatus::Starting { attempt });
@@ -182,6 +193,7 @@ impl LaunchState {
     /// 如果配置中未开启对应的管道，则跳过相应的检查。
     ///
     /// 如果没有配置任何 API 端点，则返回 [`ProxyCoreError::ApiEndpointNotConfigured`]。
+    #[instrument(name = "exec.ensure-api-ready", skip(self, args))]
     async fn ensure_api_ready(
         &self,
         args: &ProxyRunningArguments,
@@ -305,7 +317,7 @@ impl LaunchState {
             .create(true)
             .append(true)
             .open(&stderr_log)?;
-        info!(core = core_name, stdout_log = %stdout_log.display(), stderr_log = %stderr_log.display(), "redirecting proxy core output");
+        info!(stdout_log = %stdout_log.display(), stderr_log = %stderr_log.display(), "redirecting proxy core output");
         let mut command = Command::new(&self.executable);
         command
             .args(&running_args)

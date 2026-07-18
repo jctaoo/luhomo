@@ -4,7 +4,7 @@ use http::{
     header::{HeaderValue, USER_AGENT},
 };
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 
 use crate::config::models::{self, ConfigurationSource};
 use crate::net::http::HttpClient;
@@ -28,6 +28,7 @@ pub trait ConfigurationFetcher {
 
     fn get_client(&self) -> &Self::Client;
 
+#[instrument(name = "cfgfetch.fetch", skip(self, source, _old))]
     async fn fetch_configuration(
         &self,
         source: &ConfigurationSource,
@@ -43,10 +44,10 @@ pub trait ConfigurationFetcher {
             ConfigurationSource::RemoteUrl { url, user_agent, .. } => {
                 let client = self.get_client();
                 let headers = user_agent_headers(user_agent)?;
-                info!(
+                debug!(
                     scheme = url.scheme(),
                     host = url.host_str(),
-                    has_custom_user_agent = user_agent.is_some(),
+                    user_agent = %user_agent.as_deref().unwrap_or("<none>"),
                     "fetching remote configuration"
                 );
                 let resp = client

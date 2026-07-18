@@ -88,7 +88,7 @@ fn find_mihomo_executable() -> PathBuf {
     {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         if let Some(root) = find_cargo_workspace_root(manifest_dir) {
-            trace!(path = %root.display(), "Trying to find mihomo executable in Cargo workspace target directory");
+            trace!(path = %root.display(), "trying to find mihomo executable in Cargo workspace target directory");
             for profile in &["debug", "release"] {
                 let p = root.join("target").join(profile).join(executable_name);
                 trace!(path = %p.display(), source = "Cargo target directory", "checking mihomo executable");

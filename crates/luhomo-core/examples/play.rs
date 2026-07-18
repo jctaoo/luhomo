@@ -1,4 +1,4 @@
-//! 使用方式：`cargo run -p luhomo-core --example play`
+//! 使用方式：`cargo run -p luhomo-core --example play [-- -v|--verbose]`
 //!
 //! 启动前请确保 mihomo 可执行文件可用；可通过 `MIHOMO_PATH` 指定其路径。
 
@@ -19,7 +19,7 @@ use url::Url;
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("luhomo_core=trace")))
+        .with_env_filter(logging_filter())
         .with_target(false)
         .init();
 
@@ -30,7 +30,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let item = if items.is_empty() {
         add_subscription(&manager).await?
     } else {
-        select_configuration(&items)?
+        match select_configuration(&items)? {
+            Some(item) => item,
+            None => add_subscription(&manager).await?,
+        }
     };
     let controller = read_input_with_default("API 控制器地址 [127.0.0.1:9090]: ", "127.0.0.1:9090")?;
     let args = ProxyRunningArguments::builder().external_controller(controller).build();
@@ -54,6 +57,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("mihomo 已停止。");
 
     Ok(())
+}
+
+fn logging_filter() -> EnvFilter {
+    let verbose = std::env::args().skip(1).any(|arg| matches!(arg.as_str(), "-v" | "--verbose"));
+    let default_level = if verbose {
+        "trace"
+    } else if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "info"
+    };
+
+    EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(format!("luhomo_core={default_level}")))
 }
 
 async fn wait_for_stop_signal() -> Result<(), Box<dyn std::error::Error>> {
@@ -110,17 +127,20 @@ async fn add_subscription(
     Ok(manager.add(source).await?)
 }
 
-fn select_configuration(items: &[ConfigurationItem]) -> io::Result<ConfigurationItem> {
+fn select_configuration(items: &[ConfigurationItem]) -> io::Result<Option<ConfigurationItem>> {
     println!("发现已缓存的配置：");
     for (index, item) in items.iter().enumerate() {
         println!("  {}. {} ({})", index + 1, item.display_name, item.uuid);
     }
+    let add_index = items.len() + 1;
+    println!("  {add_index}. 新增配置");
 
     loop {
-        let input = read_input(&format!("请选择配置 [1-{}]: ", items.len()))?;
+        let input = read_input(&format!("请选择配置 [1-{add_index}]: "))?;
         match input.parse::<usize>() {
-            Ok(index) if (1..=items.len()).contains(&index) => return Ok(items[index - 1].clone()),
-            _ => println!("请输入 1 到 {} 之间的编号。", items.len()),
+            Ok(index) if (1..=items.len()).contains(&index) => return Ok(Some(items[index - 1].clone())),
+            Ok(index) if index == add_index => return Ok(None),
+            _ => println!("请输入 1 到 {add_index} 之间的编号。"),
         }
     }
 }
