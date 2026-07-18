@@ -9,7 +9,7 @@ use tokio::io::AsyncReadExt;
 pub async fn file_sha256(path: impl AsRef<Path>) -> io::Result<String> {
     let mut file = tokio::fs::File::open(path).await?;
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
+    let mut buffer = vec![0_u8; 64 * 1024];
 
     loop {
         let bytes_read = file.read(&mut buffer).await?;
