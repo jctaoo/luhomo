@@ -22,6 +22,15 @@ pub async fn file_sha256(path: impl AsRef<Path>) -> io::Result<String> {
     Ok(to_hex(&hasher.finalize()))
 }
 
+/// Calculates the SHA-256 hash of in-memory bytes.
+///
+/// The returned value is a lowercase hexadecimal string.
+pub fn bytes_sha256(data: impl AsRef<[u8]>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data.as_ref());
+    to_hex(&hasher.finalize())
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut result = String::with_capacity(bytes.len() * 2);

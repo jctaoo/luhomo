@@ -1,6 +1,7 @@
 use luhomo_core::proxy::global_args::ProxyRunningArguments;
 use luhomo_core::proxy::launch_err::ProxyCoreError;
 use luhomo_core::proxy::launch_status::{ProxyApiStream, ProxyCoreStatus};
+use std::sync::Arc;
 use std::time::Duration;
 mod support;
 
@@ -17,7 +18,7 @@ async fn launches_redirects_output_rejects_a_second_launch_and_shuts_down() {
     let mut execution = execution(&runtime, false);
 
     let stream = execution
-        .launch(&configuration(), b"test-mode: stay-running\n", &args)
+        .launch(&configuration(), static_source(b"test-mode: stay-running\n"), &args)
         .await
         .unwrap();
     assert!(matches!(stream, ProxyApiStream::Tcp(_)));
@@ -27,7 +28,7 @@ async fn launches_redirects_output_rejects_a_second_launch_and_shuts_down() {
     ));
 
     let second_launch = execution
-        .launch(&configuration(), b"test-mode: stay-running\n", &args)
+        .launch(&configuration(), static_source(b"test-mode: stay-running\n"), &args)
         .await;
     assert!(matches!(second_launch, Err(ProxyCoreError::AlreadyRunning { .. })));
 
@@ -51,7 +52,7 @@ async fn records_an_unexpected_exit_without_restarting_when_disabled() {
     execution
         .launch(
             &configuration(),
-            b"test-mode: crash-after-ready\n",
+            static_source(b"test-mode: crash-after-ready\n"),
             &running_arguments(&address),
         )
         .await
@@ -79,7 +80,7 @@ async fn restarts_after_a_crash_and_increments_the_generation() {
     execution
         .launch(
             &configuration(),
-            b"test-mode: crash-once\n",
+            static_source(b"test-mode: crash-once\n"),
             &running_arguments(&address),
         )
         .await
@@ -101,9 +102,9 @@ async fn restarts_after_a_crash_and_increments_the_generation() {
 }
 
 #[tokio::test]
-async fn reuses_the_runtime_yaml_when_its_hash_matches_during_restart() {
-    // 首次启动会写入运行时 YAML；`crash-once` 触发自动重启后，第二次 launch_once
-    // 应验证该文件哈希匹配并复用它，而不是再次合并、写入同一路径。
+async fn reuses_the_runtime_yaml_when_source_and_args_match_during_restart() {
+    // 首次启动会写入运行时 YAML；`crash-once` 触发自动重启后，若源配置与运行参数
+    // 均未变化且文件仍在，应复用它，而不是再次合并、写入同一路径。
     let _guard = PROCESS_TEST_LOCK.lock().await;
     let runtime = TestRuntime::new();
     let address = unused_tcp_address();
@@ -115,7 +116,7 @@ async fn reuses_the_runtime_yaml_when_its_hash_matches_during_restart() {
     execution
         .launch(
             &configuration,
-            b"test-mode: crash-once\n",
+            static_source(b"test-mode: crash-once\n"),
             &running_arguments(&address),
         )
         .await
@@ -136,7 +137,41 @@ async fn reuses_the_runtime_yaml_when_its_hash_matches_during_restart() {
         .expect("runtime YAML should expose a modification time");
     assert_eq!(
         restart_write_time, first_write_time,
-        "a matching runtime YAML hash must skip rewriting the file"
+        "unchanged source and running arguments must skip rewriting the runtime YAML"
+    );
+
+    execution.shutdown().await.unwrap();
+    assert_recorded_processes_are_exited(&runtime).await;
+}
+
+#[tokio::test]
+async fn reloads_updated_source_content_when_restarting_after_a_crash() {
+    // 首次启动后源配置被替换；crash-once 触发重启时应重新 load 并写入新的 test-mode。
+    let _guard = PROCESS_TEST_LOCK.lock().await;
+    let runtime = TestRuntime::new();
+    let address = unused_tcp_address();
+    let configuration = configuration();
+    let runtime_yaml = runtime.path().join(format!("{}.yaml", configuration.uuid));
+    let source = MutableRuntimeConfigSource::new(b"test-mode: crash-once\n");
+    let mut execution = execution(&runtime, true);
+    let mut statuses = execution.status_watcher();
+
+    execution
+        .launch(&configuration, Arc::clone(&source), &running_arguments(&address))
+        .await
+        .unwrap();
+    source.set(b"test-mode: stay-running\n");
+
+    wait_for_status(&mut statuses, |status| {
+        matches!(status, ProxyCoreStatus::Running { generation: 2, .. })
+    })
+    .await;
+
+    let runtime_yaml_content =
+        std::fs::read_to_string(&runtime_yaml).expect("restart should rewrite runtime YAML");
+    assert!(
+        runtime_yaml_content.contains("test-mode: stay-running"),
+        "restart must pick up the updated source content, got:\n{runtime_yaml_content}"
     );
 
     execution.shutdown().await.unwrap();
@@ -155,7 +190,7 @@ async fn reports_a_process_that_exits_before_its_api_is_ready() {
     let result = execution
         .launch(
             &configuration(),
-            b"test-mode: exit-before-ready\n",
+            static_source(b"test-mode: exit-before-ready\n"),
             &running_arguments(&address),
         )
         .await;
@@ -182,7 +217,7 @@ async fn rejects_a_missing_executable_before_starting_the_core() {
     let result = execution
         .launch(
             &configuration(),
-            b"test-mode: stay-running\n",
+            static_source(b"test-mode: stay-running\n"),
             &running_arguments("127.0.0.1:1"),
         )
         .await;
@@ -206,7 +241,7 @@ async fn fails_startup_and_kills_the_core_when_its_api_never_becomes_ready() {
     let result = execution
         .launch(
             &configuration(),
-            b"test-mode: stay-running-without-api\n",
+            static_source(b"test-mode: stay-running-without-api\n"),
             &running_arguments(&address),
         )
         .await;
@@ -236,7 +271,7 @@ async fn rejects_startup_without_an_api_endpoint() {
     let result = execution
         .launch(
             &configuration(),
-            b"test-mode: stay-running\n",
+            static_source(b"test-mode: stay-running\n"),
             &ProxyRunningArguments::default(),
         )
         .await;
@@ -270,7 +305,7 @@ async fn marks_the_execution_failed_when_an_automatic_restart_cannot_open_its_ap
     execution
         .launch(
             &configuration(),
-            b"test-mode: crash-once-then-no-api\n",
+            static_source(b"test-mode: crash-once-then-no-api\n"),
             &running_arguments(&address),
         )
         .await
@@ -298,7 +333,7 @@ async fn shutdown_during_restart_backoff_prevents_a_new_process_from_starting() 
     execution
         .launch(
             &configuration(),
-            b"test-mode: crash-after-ready\n",
+            static_source(b"test-mode: crash-after-ready\n"),
             &running_arguments(&address),
         )
         .await

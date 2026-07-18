@@ -22,8 +22,8 @@ pub enum ProxyCoreError {
     #[error("failed to read or write runtime config: {0}")]
     ConfigError(#[source] std::io::Error),
 
-    #[error("Not provide raw config bytes")]
-    NoConfigBytes,
+    #[error("failed to load configuration content: {0}")]
+    ConfigSource(#[source] crate::config::storage::ConfigurationStorageError),
 
     #[error("failed to redirect proxy core output: {0}")]
     OutputRedirectFailed(#[source] std::io::Error),

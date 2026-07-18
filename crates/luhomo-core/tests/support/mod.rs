@@ -1,12 +1,16 @@
 #![allow(dead_code)]
 
+use bytes::Bytes;
 use luhomo_core::config::models::{ConfigurationItem, ConfigurationSource};
+use luhomo_core::config::{RuntimeConfigSource, StaticRuntimeConfigSource};
+use luhomo_core::config::storage::ConfigurationStorageError;
 use luhomo_core::proxy::core_type::ProxyCoreType;
 use luhomo_core::proxy::execution::ProxyCoreExecution;
 use luhomo_core::proxy::global_args::ProxyRunningArguments;
 use luhomo_core::proxy::launch_status::ProxyCoreStatus;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use sysinfo::{Pid, System};
 use tokio::sync::watch;
@@ -65,6 +69,40 @@ pub fn configuration() -> ConfigurationItem {
         .source(ConfigurationSource::LocalFile("proxy-core-test-double.yaml".to_owned()))
         .display_name("proxy core test double")
         .build()
+}
+
+/// 固定内容的测试配置源。
+pub fn static_source(content: impl AsRef<[u8]>) -> Arc<StaticRuntimeConfigSource> {
+    Arc::new(StaticRuntimeConfigSource::new(content))
+}
+
+/// 可在运行时替换内容的配置源，用于验证自动重启会重新加载。
+#[derive(Clone)]
+pub struct MutableRuntimeConfigSource {
+    content: Arc<Mutex<Bytes>>,
+}
+
+impl MutableRuntimeConfigSource {
+    pub fn new(content: impl AsRef<[u8]>) -> Arc<Self> {
+        Arc::new(Self {
+            content: Arc::new(Mutex::new(Bytes::copy_from_slice(content.as_ref()))),
+        })
+    }
+
+    pub fn set(&self, content: impl AsRef<[u8]>) {
+        *self.content.lock().expect("mutable config source lock") =
+            Bytes::copy_from_slice(content.as_ref());
+    }
+}
+
+impl RuntimeConfigSource for MutableRuntimeConfigSource {
+    fn load(
+        &self,
+        _id: &uuid::Uuid,
+    ) -> impl std::future::Future<Output = Result<Bytes, ConfigurationStorageError>> + Send {
+        let content = self.content.lock().expect("mutable config source lock").clone();
+        async move { Ok(content) }
+    }
 }
 
 /// 获取一个当前空闲的临时 TCP 地址，写入测试核心的 `external-controller` 配置。

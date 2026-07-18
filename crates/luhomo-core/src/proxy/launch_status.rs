@@ -23,9 +23,15 @@ pub struct LaunchContext {
     #[builder(default = 0)]
     pub current_attempts: u32,
 
-    /// 可选的 core manifest hash，用于在启动时验证配置是否匹配。如果匹配则不再更新配置文件。
+    /// 最近一次写入运行时 YAML 时使用的源配置内容哈希。
+    ///
+    /// 与 [`Self::previous_running_args`] 一起判断是否可跳过重新 merge 写盘：
+    /// runtime YAML 语义上由 `source + ProxyRunningArguments` 唯一决定。
     #[builder(into)]
-    pub core_manifest_hash: Option<String>,
+    pub source_content_hash: Option<String>,
+
+    /// 最近一次写入运行时 YAML 时使用的运行参数。
+    pub previous_running_args: Option<ProxyRunningArguments>,
 }
 
 /// 已连接到代理核心 API 的流。

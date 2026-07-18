@@ -1,6 +1,9 @@
 pub mod models;
 pub mod fetcher;
+pub mod runtime_source;
 pub mod storage;
+
+pub use runtime_source::{RuntimeConfigSource, StaticRuntimeConfigSource};
 
 use bytes::Bytes;
 #[cfg(feature = "reqwest")]

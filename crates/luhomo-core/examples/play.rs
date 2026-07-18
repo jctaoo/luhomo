@@ -32,9 +32,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         select_configuration(&items)?
     };
-    let content = manager.get_content(&item.uuid).await?;
-    // `content` 就是订阅原始 YAML，直接作为 runtime manifest 的基础配置。
-
     let controller = read_input_with_default("API 控制器地址 [127.0.0.1:9090]: ", "127.0.0.1:9090")?;
     let args = ProxyRunningArguments::builder().external_controller(controller).build();
     let runtime_dir = storage_dir.join("mihomo-runtime");
@@ -43,7 +40,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .core_type(ProxyCoreType::Mihomo)
         .runtime_dir(runtime_dir)
         .build();
-    let api_stream = execution.launch(&item, content, &args).await?;
+    let manager = std::sync::Arc::new(manager);
+    let api_stream = execution.launch(&item, manager, &args).await?;
 
     match &api_stream {
         ProxyApiStream::Tcp(_) => println!("mihomo 已启动，已连接 TCP API。"),

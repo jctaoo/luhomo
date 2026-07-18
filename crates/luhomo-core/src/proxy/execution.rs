@@ -1,3 +1,4 @@
+use crate::config::RuntimeConfigSource;
 use crate::config::models::ConfigurationItem;
 use crate::proxy::core_type::ProxyCoreType;
 use crate::proxy::global_args::ProxyRunningArguments;
@@ -75,18 +76,21 @@ impl ProxyCoreExecution {
 impl ProxyCoreExecution {
     /// 启动 proxy core 内核。
     ///
-    /// 将代理配置与 [`ProxyRunningArguments`] 合并后写入运行时 YAML 文件，
-    /// 然后启动一个后台监控任务。监控任务利用 [`Child::wait`] 等待进程退出；
-    /// 若退出并非由 [`ProxyCoreExecution::shutdown`] 触发，则在启用自动重启时尝试重新启动。
+    /// 通过 [`RuntimeConfigSource`] 按配置 UUID 加载最新内容，与 [`ProxyRunningArguments`]
+    /// 合并后写入运行时 YAML 文件，然后启动一个后台监控任务。监控任务利用 [`Child::wait`]
+    /// 等待进程退出；若退出并非由 [`ProxyCoreExecution::shutdown`] 触发，则在启用自动重启时
+    /// 再次从 source 加载配置并尝试重新启动。
     ///
     /// 返回已就绪且已连接的 API 流。
-    pub async fn launch(
+    pub async fn launch<S>(
         &mut self,
         configuration_item: &ConfigurationItem,
-        config: impl AsRef<[u8]>,
+        config_source: Arc<S>,
         args: &ProxyRunningArguments,
-    ) -> Result<ProxyApiStream, ProxyCoreError> {
-        let config = config.as_ref().to_vec();
+    ) -> Result<ProxyApiStream, ProxyCoreError>
+    where
+        S: RuntimeConfigSource + 'static,
+    {
         let mut context = LaunchContext::builder()
             .core_type(self.launch_state.core_type.clone())
             .config_identity(configuration_item.uuid)
@@ -94,15 +98,13 @@ impl ProxyCoreExecution {
             .running_args(args.clone())
             .auto_restart(self.auto_restart)
             .build();
+        let config = config_source.load(&context.config_identity).await.map_err(ProxyCoreError::ConfigSource)?;
         let LaunchingInstance {
             mut child,
             pid,
             api_stream,
             generation,
-        } = self
-            .launch_state
-            .launch_once(&mut context, Some(config.clone()))
-            .await?;
+        } = self.launch_state.launch_once(&mut context, config).await?;
 
         let shutdown_token = tokio_util::sync::CancellationToken::new();
         self.shutdown_token = Some(shutdown_token.clone());
@@ -149,7 +151,26 @@ impl ProxyCoreExecution {
                                 next_attempt = context.current_attempts.saturating_add(1),
                                 "restarting proxy core after unexpected exit"
                             );
-                            match launch_state.launch_once(&mut context, Some(config.clone())).await {
+                            let config = tokio::select! {
+                                biased;
+                                _ = shutdown_token.cancelled() => {
+                                    status_tx.send_replace(ProxyCoreStatus::Stopped);
+                                    break;
+                                }
+                                result = config_source.load(&context.config_identity) => {
+                                    match result {
+                                        Ok(config) => config,
+                                        Err(error) => {
+                                            warn!(?error, "failed to load configuration for proxy core restart");
+                                            status_tx.send_replace(ProxyCoreStatus::Failed {
+                                                message: ProxyCoreError::ConfigSource(error).to_string(),
+                                            });
+                                            break;
+                                        }
+                                    }
+                                }
+                            };
+                            match launch_state.launch_once(&mut context, config).await {
                                 Ok(LaunchingInstance {
                                     child: new_child,
                                     pid,
@@ -202,7 +223,7 @@ impl ProxyCoreExecution {
 
     /// 获取状态变更的监听器。
     ///
-    /// 每次状态变化时返回，调用方可以轮询或使用 `changed()` 异步等待。
+    /// 每次状态变化时返回，调用方可轮询或使用 `changed()` 异步等待。
     pub fn status_watcher(&self) -> watch::Receiver<ProxyCoreStatus> {
         self.launch_state.status_rx.clone()
     }

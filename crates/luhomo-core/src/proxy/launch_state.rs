@@ -28,12 +28,13 @@ impl LaunchState {
     /// 启动一次 proxy core。
     ///
     /// 将代理配置与 [`ProxyRunningArguments`] 合并后写入运行时 YAML 文件，随后创建
-    /// 子进程并等待其 API 就绪。成功时会更新 `context.current_attempts` 和
-    /// `context.core_manifest_hash`；当哈希仍匹配时，复用已有的运行时 YAML 文件。
+    /// 子进程并等待其 API 就绪。成功时会更新 `context.current_attempts`、
+    /// `context.source_content_hash` 和 `context.previous_running_args`；当源配置、
+    /// 运行参数与已写入记录一致且运行时文件仍存在时，复用已有的 YAML。
     pub(crate) async fn launch_once(
         &self,
         context: &mut LaunchContext,
-        config: Option<impl AsRef<[u8]> + Send>,
+        config: impl AsRef<[u8]> + Send,
     ) -> Result<LaunchingInstance, ProxyCoreError> {
         // Check the current status to ensure we are not already running or starting.
         match *self.status_rx.borrow() {
@@ -58,29 +59,43 @@ impl LaunchState {
         self.prepare_runtime_dir().await?;
         let log_dir = self.prepare_core_log_dir().await?;
         let runtime_config_path = runtime_config_filepath(&context.runtime_dir, context.config_identity);
-        let mut need_regenerate_config = true;
+        let source_hash = utils::hash::bytes_sha256(config.as_ref());
+        let source_unchanged = context.source_content_hash.as_deref() == Some(source_hash.as_str());
+        let args_unchanged = context.previous_running_args.as_ref() == Some(&context.running_args);
+        let runtime_config_exists = tokio::fs::try_exists(&runtime_config_path)
+            .await
+            .map_err(ProxyCoreError::ConfigError)?;
+        let need_regenerate_config = !(source_unchanged && args_unchanged && runtime_config_exists);
 
-        if let Some(expected_hash) = &context.core_manifest_hash {
-            let config_hash = utils::hash::file_sha256(&runtime_config_path)
-                .await
-                .map_err(ProxyCoreError::ConfigError)?;
-            if config_hash.as_str() != expected_hash {
-                info!(runtime_config_path = %runtime_config_path.display(), expected_hash = %expected_hash, actual_hash = %config_hash, "runtime config hash mismatch, regenerating config");
-            } else {
-                trace!(runtime_config_path = %runtime_config_path.display(), expected_hash = %expected_hash, "runtime config hash matches, skipping regeneration");
-                need_regenerate_config = false;
-            }
-        }
-
-        // Regenerate the runtime configuration file if needed.
         if need_regenerate_config {
-            let config = config.ok_or(ProxyCoreError::NoConfigBytes)?;
+            if context.source_content_hash.is_some() || context.previous_running_args.is_some() {
+                if !source_unchanged {
+                    info!(
+                        config_identity = %context.config_identity,
+                        "source configuration content changed, regenerating runtime config"
+                    );
+                }
+                if !args_unchanged {
+                    info!(
+                        config_identity = %context.config_identity,
+                        "proxy running arguments changed, regenerating runtime config"
+                    );
+                }
+                if !runtime_config_exists {
+                    info!(
+                        runtime_config_path = %runtime_config_path.display(),
+                        "runtime config missing, regenerating config"
+                    );
+                }
+            }
             self.merge_and_write_runtime_cfg(config, &context.running_args, &runtime_config_path)
                 .await?;
-            context.core_manifest_hash = Some(
-                utils::hash::file_sha256(&runtime_config_path)
-                    .await
-                    .map_err(ProxyCoreError::ConfigError)?,
+            context.source_content_hash = Some(source_hash);
+            context.previous_running_args = Some(context.running_args.clone());
+        } else {
+            trace!(
+                runtime_config_path = %runtime_config_path.display(),
+                "source and running arguments unchanged, reusing runtime config"
             );
         }
 
