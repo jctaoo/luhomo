@@ -266,6 +266,8 @@ impl ProxyCoreExecution {
         }
         if let Some(handle) = self.monitor_handle.take() {
             handle.await.map_err(ProxyCoreError::monitor_task_failed)?;
+        } else {
+            warn!("no monitor task handle found during shutdown");
         }
         self.shutdown_token = None;
         info!("proxy core stopped");
