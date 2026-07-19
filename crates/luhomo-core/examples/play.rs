@@ -12,7 +12,7 @@ use luhomo_core::{
         core_type::ProxyCoreType, execution::ProxyCoreExecution, global_args::ProxyRunningArguments, launch_status::ProxyApiStream,
     },
 };
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::oneshot;
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
@@ -73,13 +73,19 @@ fn logging_filter() -> EnvFilter {
         .unwrap_or_else(|_| EnvFilter::new(format!("luhomo_core={default_level}")))
 }
 
-async fn wait_for_stop_signal() -> Result<(), Box<dyn std::error::Error>> {
-    let mut stdin = BufReader::new(tokio::io::stdin());
-    let mut line = String::new();
+async fn wait_for_stop_signal() -> io::Result<()> {
+    // Windows 控制台读取不可取消。若直接使用 `tokio::io::stdin()`，Ctrl+C 使
+    // `select!` 退出后，Tokio runtime 在销毁时仍会等待那个阻塞的读取任务。
+    // 使用独立线程读取 stdin；Ctrl+C 后无需等待该线程，进程便可正常退出。
+    let (sender, mut receiver) = oneshot::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = sender.send(io::stdin().read_line(&mut line));
+    });
 
     tokio::select! {
-        result = stdin.read_line(&mut line) => {
-            result?;
+        result = &mut receiver => {
+            result.map_err(|_| io::Error::other("stdin reader thread stopped unexpectedly"))??;
         }
         result = tokio::signal::ctrl_c() => {
             result?;
