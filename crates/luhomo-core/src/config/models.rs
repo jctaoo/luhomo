@@ -1,6 +1,7 @@
 use bon::{Builder, bon};
 use serde::{Deserialize, Serialize};
 use serde_with::{DurationSeconds, serde_as};
+use std::path::Path;
 use url::Url;
 
 /// 配置更新策略
@@ -37,6 +38,18 @@ pub enum ConfigurationSource {
 
 #[bon]
 impl ConfigurationSource {
+    /// 用于在界面中显示的来源名称。
+    pub fn display_name(&self) -> String {
+        match self {
+            Self::LocalFile(path) => Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(path)
+                .to_owned(),
+            Self::RemoteUrl { url, .. } => url.host_str().unwrap_or(url.as_str()).to_owned(),
+        }
+    }
+
     /// 本地文件配置来源
     #[builder]
     pub fn local_file(#[builder(into)] path: String) -> Self {
@@ -61,6 +74,29 @@ impl ConfigurationSource {
             use_proxy,
             user_agent,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derives_display_name_from_configuration_source() {
+        let local = ConfigurationSource::LocalFile("configs/example.yaml".to_owned());
+        let remote = ConfigurationSource::RemoteUrl {
+            url: Url::parse("https://sub.example.com/path/config.yaml").unwrap(),
+            update_strategy: UpdateStrategy {
+                auto_update: false,
+                interval: None,
+            },
+            homepage: None,
+            use_proxy: false,
+            user_agent: None,
+        };
+
+        assert_eq!(local.display_name(), "example.yaml");
+        assert_eq!(remote.display_name(), "sub.example.com");
     }
 }
 

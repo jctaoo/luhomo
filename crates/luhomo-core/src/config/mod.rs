@@ -23,17 +23,6 @@ pub enum ConfigurationManagerError {
     Fetch(#[from] ConfigurationFetcherError),
 }
 
-pub fn source_display_name(source: &ConfigurationSource) -> String {
-    match source {
-        ConfigurationSource::LocalFile(path) => std::path::Path::new(path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(path)
-            .to_string(),
-        ConfigurationSource::RemoteUrl { url, .. } => url.host_str().unwrap_or(url.as_str()).to_string(),
-    }
-}
-
 pub trait ConfigurationManager {
     type Fetcher: ConfigurationFetcher;
 
@@ -44,7 +33,7 @@ pub trait ConfigurationManager {
     async fn add(&self, source: ConfigurationSource) -> Result<ConfigurationItem, ConfigurationManagerError> {
         let item = ConfigurationItem::builder()
             .source(source.clone())
-            .display_name(source_display_name(&source))
+            .display_name(source.display_name())
             .build();
         info!(uuid = %item.uuid, display_name = %item.display_name, "adding configuration");
 
